@@ -1,0 +1,24 @@
+scheduler:
+  enabled: true
+  timezone: Asia/Shanghai
+  times:
+    - "08:30"
+    - "12:30"
+    - "16:00"
+news:
+  use_akshare_stock_news: true
+  max_items_per_stock: 8
+  enable_search_fallback: true
+  search_provider: bing,google
+  min_items_before_search: 2
+  enable_sector_news: true
+  max_sector_items_per_stock: 4
+  rss_feeds: []
+macro:
+  endpoints: []
+reports:
+  output_dir: ""
+llm:
+  enabled: false
+  prompt_template: ""
+stocks: []

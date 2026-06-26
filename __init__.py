@@ -1,0 +1,2 @@
+"""Stock Watch Assistant package."""
+

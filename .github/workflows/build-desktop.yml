@@ -1,0 +1,41 @@
+name: Build desktop packages
+
+on:
+  workflow_dispatch:
+
+jobs:
+  windows-exe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build Windows exe
+        shell: pwsh
+        run: .\scripts\build_windows_exe.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: StockWatchAssistant-Windows
+          path: |
+            dist\StockWatchAssistant
+            dist\StockWatchAssistant-Windows-x86_64.zip
+
+  macos-app:
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build macOS app
+        run: |
+          chmod +x scripts/build_macos_app.sh
+          ./scripts/build_macos_app.sh
+          ditto -c -k --sequesterRsrc --keepParent "dist/Stock Watch Assistant.app" "dist/StockWatchAssistant-macOS-x86_64.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: StockWatchAssistant-macOS
+          path: |
+            dist/Stock Watch Assistant.app
+            dist/StockWatchAssistant-macOS-x86_64.zip
