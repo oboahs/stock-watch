@@ -75,6 +75,8 @@ ORDER BY a.id DESC
 LIMIT 200
 """
 REPORT_PREVIEW_LIMIT = 80_000
+NEW_STOCK_IID = "__new_stock__"
+SIDEBAR_WIDTH = 200
 ENV_KEYS = [
     "LLM_API_KEY",
     "LLM_BASE_URL",
@@ -262,20 +264,21 @@ class StockWatchDesktopApp(tk.Tk):
         self.body_frame.pack(fill="both", expand=True)
         self.body_frame.columnconfigure(1, weight=1)
         self.body_frame.rowconfigure(0, weight=1)
-        self.sidebar_panel = ttk.Frame(self.body_frame, width=260, style="Panel.TFrame", padding=(14, 14))
+        self.sidebar_panel = ttk.Frame(self.body_frame, width=SIDEBAR_WIDTH, style="Panel.TFrame", padding=(12, 12))
         self.sidebar_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
         self.sidebar_panel.grid_propagate(False)
         ttk.Label(self.sidebar_panel, text="风险分布", style="Panel.TLabel", font=(FONT_FAMILY, 16, "bold")).pack(anchor="w")
-        self.risk_canvas = tk.Canvas(self.sidebar_panel, bg=PANEL, highlightthickness=0, height=320)
-        self.risk_canvas.pack(fill="x", pady=(12, 16))
+        self.risk_canvas = tk.Canvas(self.sidebar_panel, bg=PANEL, highlightthickness=0, height=180)
+        self.risk_canvas.pack(fill="x", pady=(10, 12))
         ttk.Label(self.sidebar_panel, text="最新风险提醒", style="Panel.TLabel", font=(FONT_FAMILY, 16, "bold")).pack(anchor="w")
-        self.risk_text = tk.Text(self.sidebar_panel, height=12, wrap="word", bd=0, bg=PANEL, fg=TEXT, font=FONT_SMALL)
+        self.risk_text = tk.Text(self.sidebar_panel, height=7, wrap="word", bd=0, bg=PANEL, fg=TEXT, font=FONT_SMALL)
         self.risk_text.pack(fill="both", expand=True, pady=(8, 0))
 
         self.content_panel = ttk.Frame(self.body_frame)
         self.content_panel.grid(row=0, column=1, sticky="nsew")
         self.tabs = ttk.Notebook(self.content_panel)
         self.tabs.pack(fill="both", expand=True)
+        self._build_watchlist_settings(self.tabs, title="自选股设定")
         self._build_stock_tab()
         self._build_news_tab()
         self._build_report_tab()
@@ -314,15 +317,15 @@ class StockWatchDesktopApp(tk.Tk):
             self.sidebar_panel.configure(width=1)
             self.sidebar_panel.grid(row=0, column=0, sticky="ew", padx=0, pady=(0, 12))
             self.content_panel.grid(row=1, column=0, sticky="nsew")
-            self.risk_canvas.configure(height=220)
+            self.risk_canvas.configure(height=150)
         else:
             self.body_frame.columnconfigure(1, weight=1)
             self.body_frame.rowconfigure(0, weight=1)
             self.sidebar_panel.grid_propagate(False)
-            self.sidebar_panel.configure(width=260)
+            self.sidebar_panel.configure(width=SIDEBAR_WIDTH)
             self.sidebar_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 14), pady=0)
             self.content_panel.grid(row=0, column=1, sticky="nsew")
-            self.risk_canvas.configure(height=320)
+            self.risk_canvas.configure(height=180)
 
     def _build_stock_tab(self) -> None:
         frame = ttk.Frame(self.tabs, style="Panel.TFrame", padding=10)
@@ -365,14 +368,13 @@ class StockWatchDesktopApp(tk.Tk):
     def _build_settings_content(self, parent: tk.Misc) -> None:
         settings_tabs = ttk.Notebook(parent)
         settings_tabs.pack(fill="both", expand=True)
-        self._build_watchlist_settings(settings_tabs)
         self._build_runtime_settings(settings_tabs)
         self._build_report_llm_settings(settings_tabs)
         self._build_env_settings(settings_tabs)
 
-    def _build_watchlist_settings(self, parent: ttk.Notebook) -> None:
+    def _build_watchlist_settings(self, parent: ttk.Notebook, title: str = "自选股") -> None:
         frame = ttk.Frame(parent, style="Panel.TFrame", padding=10)
-        parent.add(frame, text="自选股")
+        parent.add(frame, text=title)
         frame.columnconfigure(1, weight=1)
         frame.rowconfigure(0, weight=1)
         left = ttk.Frame(frame, style="Panel.TFrame", width=240)
@@ -612,6 +614,10 @@ class StockWatchDesktopApp(tk.Tk):
         selected = self.config_stock_tree.selection()
         if not selected:
             return
+        if selected[0] == NEW_STOCK_IID:
+            self.selected_stock_index = None
+            self.populate_stock_form({"market": "A股", "themes": [], "key_levels": {}})
+            return
         index = int(selected[0])
         stocks = self.config.get("stocks", [])
         if index >= len(stocks):
@@ -638,7 +644,12 @@ class StockWatchDesktopApp(tk.Tk):
     def new_stock_form(self) -> None:
         self.selected_stock_index = None
         self.populate_stock_form({"market": "A股", "themes": [], "key_levels": {}})
-        self.config_stock_tree.selection_remove(self.config_stock_tree.selection())
+        if widget_alive(getattr(self, "config_stock_tree", None)):
+            if not self.config_stock_tree.exists(NEW_STOCK_IID):
+                self.config_stock_tree.insert("", 0, iid=NEW_STOCK_IID, values=("", "", "", ""))
+            self.config_stock_tree.selection_set(NEW_STOCK_IID)
+            self.config_stock_tree.focus(NEW_STOCK_IID)
+            self.config_stock_tree.see(NEW_STOCK_IID)
 
     def stock_form_to_dict(self) -> dict[str, object]:
         code = self.stock_vars["code"].get().strip()
@@ -690,6 +701,8 @@ class StockWatchDesktopApp(tk.Tk):
         self.config["stocks"] = stocks
         save_watchlist(self.config)
         sync_stocks(stocks)
+        if widget_alive(getattr(self, "config_stock_tree", None)) and self.config_stock_tree.exists(NEW_STOCK_IID):
+            self.config_stock_tree.delete(NEW_STOCK_IID)
         self.refresh_all(reload_forms=True)
 
     def autofill_stock_profile(self) -> None:
@@ -737,6 +750,12 @@ class StockWatchDesktopApp(tk.Tk):
         selected = self.config_stock_tree.selection()
         if not selected:
             self.status_var.set("请先选择要删除的股票。")
+            return
+        if selected[0] == NEW_STOCK_IID:
+            self.config_stock_tree.delete(NEW_STOCK_IID)
+            self.selected_stock_index = None
+            self.populate_stock_form({"market": "A股", "themes": [], "key_levels": {}})
+            self.status_var.set("已取消新建空白行。")
             return
         index = int(selected[0])
         stocks = list(self.config.get("stocks", []))
@@ -940,22 +959,24 @@ class StockWatchDesktopApp(tk.Tk):
     def _draw_risk_chart(self, rows: list[sqlite3.Row]) -> None:
         canvas = self.risk_canvas
         canvas.delete("all")
-        width = max(canvas.winfo_width(), 320)
-        y = 26
+        width = max(canvas.winfo_width(), 180)
+        y = 22
         if not rows:
             canvas.create_text(18, 28, anchor="w", text="暂无评分数据", fill=MUTED, font=FONT)
             return
-        for row in rows[:8]:
+        name_limit = 7 if width < 230 else 10
+        bar_x = 80 if width < 230 else 104
+        for row in rows[:5]:
             name = row["name"] or row["code"]
             score = int(row["risk_score"] or 0)
             color = risk_color(row["risk_level"])
-            canvas.create_text(10, y, anchor="w", text=str(name)[:12], fill=TEXT, font=FONT_SMALL)
-            bar_x = 118
-            bar_w = max(4, int((width - 170) * min(score, 100) / 100))
-            canvas.create_rectangle(bar_x, y - 9, width - 42, y + 9, fill="#eef2f7", outline="")
+            canvas.create_text(8, y, anchor="w", text=str(name)[:name_limit], fill=TEXT, font=FONT_SMALL)
+            track_right = max(bar_x + 24, width - 34)
+            bar_w = max(4, int((track_right - bar_x) * min(score, 100) / 100))
+            canvas.create_rectangle(bar_x, y - 8, track_right, y + 8, fill="#eef2f7", outline="")
             canvas.create_rectangle(bar_x, y - 9, bar_x + bar_w, y + 9, fill=color, outline="")
-            canvas.create_text(width - 28, y, anchor="e", text=str(score), fill=TEXT, font=FONT_SMALL)
-            y += 34
+            canvas.create_text(width - 8, y, anchor="e", text=str(score), fill=TEXT, font=FONT_SMALL)
+            y += 28
 
     def _fill_risk_text(self, rows: list[sqlite3.Row]) -> None:
         self.risk_text.delete("1.0", "end")
@@ -964,10 +985,10 @@ class StockWatchDesktopApp(tk.Tk):
             self.risk_text.insert("1.0", "暂无中高风险标的。")
             return
         lines = []
-        for row in risky[:8]:
+        for row in risky[:4]:
             lines.append(f"{row['name']}（{row['code']}）")
             lines.append(f"风险：{row['risk_level']} / {int(row['risk_score'] or 0)}")
-            lines.append(f"涨跌幅：{format_pct(row['change_pct'])}  收盘：{format_number(row['close'])}")
+            lines.append(f"{format_pct(row['change_pct'])} / {format_number(row['close'])}")
             lines.append("")
         self.risk_text.insert("1.0", "\n".join(lines).strip())
 
@@ -1446,10 +1467,16 @@ def colorize_risk_rows(tree: ttk.Treeview) -> None:
 
 
 def open_path(path: Path) -> None:
+    target = Path(path).expanduser().resolve()
     try:
-        subprocess.Popen(["open", str(path)])
+        if sys.platform.startswith("win"):
+            os.startfile(str(target))  # type: ignore[attr-defined]
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(target)])
+        else:
+            subprocess.Popen(["xdg-open", str(target)])
     except Exception as exc:
-        print(f"Unable to open path {path}: {exc}", file=sys.stderr)
+        print(f"Unable to open path {target}: {exc}", file=sys.stderr)
 
 
 def ensure_visual_report(markdown_path: Path) -> Path:

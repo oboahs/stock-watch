@@ -4,7 +4,7 @@
 
 ## 功能
 
-- 图形界面维护自选股，后台持久化到 `config/watchlist.yaml`
+- 主界面第一项维护自选股，后台持久化到 `config/watchlist.yaml`
 - SQLite 存储：`data/stock_assistant.db`
 - AKShare 获取 A股、ETF、基金行情；美股支持 Nasdaq Historical API、Yahoo Finance、Stooq，并可通过 Alpha Vantage、FMP、Finnhub API Key 增强兜底
 - 行情接口失败时会明确标注数据缺口；历史缓存只用于趋势对照，不作为实时判断依据
@@ -19,7 +19,7 @@
 - 日报支持图形界面删除，也可设置只保留最近多少天的日报
 - 趋势对比页展示近几份日报的风险分和新闻相关性变化
 - 原生桌面图形界面：`python3.11 gui.py`
-- 图形界面内置设置中心，可维护自选股、关键价位、运行时间、新闻源、宏观源、邮件和推送 API Key
+- 图形界面内置设置中心，可维护运行时间、新闻源、宏观源、邮件和推送 API Key
 - Streamlit 网页界面
 - 每天 08:30、12:30、16:00 定时运行，时间可在图形界面“设置中心”修改
 - SMTP 邮件发送日报，API Key 和密码只从 `.env` 读取
@@ -27,7 +27,7 @@
 ## 安装
 
 ```bash
-cd /Users/bobo/Desktop/股票投资交易/stock_watch_assistant
+cd stock_watch_assistant
 python3.11 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -38,9 +38,9 @@ cp .env.example .env
 
 ## 图形界面配置
 
-启动图形界面后，进入“设置中心”：
+启动图形界面后：
 
-- “自选股”：新增、修改、删除股票，维护主题、持仓、成本、股数、支撑位、压力位、风控观察位和备注。
+- “自选股设定”：主界面第一项，新增、修改、删除股票，维护主题、持仓、成本、股数、支撑位、压力位、风控观察位和备注。
 - “运行/数据源”：维护定时任务、运行时间、RSS 新闻源、搜索兜底、板块动态和宏观 API URL。
 - “报告/大模型”：维护日报保存目录、日报保留天数、大模型分析开关和提示词。启用后，程序会要求大模型返回精简 JSON，浏览器日报优先展示结构化结论；如果调用失败，会在报告顶部显示失败原因。
 - “邮件/推送/API”：维护大模型 API、SMTP 邮件、新闻 API Key、美股增强行情 API Key，以及后续 Telegram、企业微信、飞书接口参数。
@@ -54,7 +54,7 @@ cp .env.example .env
 启动本地图形界面：
 
 ```bash
-cd /Users/bobo/Desktop/股票投资交易/stock_watch_assistant
+cd stock_watch_assistant
 python3.11 gui.py
 ```
 
@@ -69,7 +69,7 @@ launcher/start_gui_macos.command
 立即生成日报：
 
 ```bash
-cd /Users/bobo/Desktop/股票投资交易/stock_watch_assistant
+cd stock_watch_assistant
 source .venv/bin/activate
 python main.py
 ```
@@ -114,7 +114,7 @@ Windows `.exe` 需要在 Windows 环境构建：
 .\scripts\build_windows_exe.ps1
 ```
 
-输出在 `dist\StockWatchAssistant\StockWatchAssistant.exe`。详细说明见 `PACKAGING.md`。
+输出在 `dist/StockWatchAssistant/StockWatchAssistant.exe`。详细说明见 `PACKAGING.md`。
 
 ## 输出结构
 

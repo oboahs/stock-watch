@@ -7,7 +7,7 @@
 在 macOS 上运行：
 
 ```bash
-cd /Users/bobo/Desktop/股票投资交易/stock_watch_assistant
+cd stock_watch_assistant
 ./scripts/build_macos_app.sh
 ```
 
@@ -32,8 +32,8 @@ py -3.11 --version
 
 输出：
 
-- `dist\StockWatchAssistant\StockWatchAssistant.exe`
-- `dist\StockWatchAssistant-Windows-x86_64.zip`
+- `dist/StockWatchAssistant/StockWatchAssistant.exe`
+- `dist/StockWatchAssistant-Windows-x86_64.zip`
 
 打包版运行数据目录：
 
@@ -43,7 +43,7 @@ py -3.11 --version
 
 1. 安装 Windows 版 Python 3.11，并勾选 `Add python.exe to PATH`。
 2. 打开 PowerShell，进入项目目录。
-3. 不要把 `.env`、`data\stock_assistant.db`、`reports\generated` 复制给别人。
+3. 不要把 `.env`、`data/stock_assistant.db`、`reports/generated` 复制给别人。
 4. 运行 `.\scripts\build_windows_exe.ps1`。
 5. 发送给别人时，只发送 `dist\StockWatchAssistant-Windows-x86_64.zip`。
 
