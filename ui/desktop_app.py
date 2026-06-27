@@ -76,7 +76,10 @@ LIMIT 200
 """
 REPORT_PREVIEW_LIMIT = 80_000
 NEW_STOCK_IID = "__new_stock__"
-SIDEBAR_WIDTH = 200
+SIDEBAR_MIN_WIDTH = 160
+SIDEBAR_MAX_WIDTH = 220
+SIDEBAR_FRACTION = 0.18
+SIDEBAR_COMPACT_THRESHOLD = 1180
 ENV_KEYS = [
     "LLM_API_KEY",
     "LLM_BASE_URL",
@@ -264,14 +267,14 @@ class StockWatchDesktopApp(tk.Tk):
         self.body_frame.pack(fill="both", expand=True)
         self.body_frame.columnconfigure(1, weight=1)
         self.body_frame.rowconfigure(0, weight=1)
-        self.sidebar_panel = ttk.Frame(self.body_frame, width=SIDEBAR_WIDTH, style="Panel.TFrame", padding=(12, 12))
+        self.sidebar_panel = ttk.Frame(self.body_frame, width=SIDEBAR_MIN_WIDTH, style="Panel.TFrame", padding=(10, 10))
         self.sidebar_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
         self.sidebar_panel.grid_propagate(False)
         ttk.Label(self.sidebar_panel, text="风险分布", style="Panel.TLabel", font=(FONT_FAMILY, 16, "bold")).pack(anchor="w")
-        self.risk_canvas = tk.Canvas(self.sidebar_panel, bg=PANEL, highlightthickness=0, height=180)
-        self.risk_canvas.pack(fill="x", pady=(10, 12))
+        self.risk_canvas = tk.Canvas(self.sidebar_panel, bg=PANEL, highlightthickness=0, height=150)
+        self.risk_canvas.pack(fill="x", pady=(8, 10))
         ttk.Label(self.sidebar_panel, text="最新风险提醒", style="Panel.TLabel", font=(FONT_FAMILY, 16, "bold")).pack(anchor="w")
-        self.risk_text = tk.Text(self.sidebar_panel, height=7, wrap="word", bd=0, bg=PANEL, fg=TEXT, font=FONT_SMALL)
+        self.risk_text = tk.Text(self.sidebar_panel, height=5, wrap="word", bd=0, bg=PANEL, fg=TEXT, font=FONT_SMALL)
         self.risk_text.pack(fill="both", expand=True, pady=(8, 0))
 
         self.content_panel = ttk.Frame(self.body_frame)
@@ -301,8 +304,11 @@ class StockWatchDesktopApp(tk.Tk):
                 self.title_box.grid(row=0, column=0, sticky="ew")
                 self.header_actions.grid(row=0, column=1, sticky="e")
 
-        compact_body = width < 1020
+        compact_body = width < SIDEBAR_COMPACT_THRESHOLD
+        sidebar_width = max(SIDEBAR_MIN_WIDTH, min(SIDEBAR_MAX_WIDTH, int(width * SIDEBAR_FRACTION)))
         if compact_body == self._compact_body:
+            if not compact_body:
+                self.sidebar_panel.configure(width=sidebar_width)
             return
         self._compact_body = compact_body
         self.sidebar_panel.grid_forget()
@@ -317,15 +323,17 @@ class StockWatchDesktopApp(tk.Tk):
             self.sidebar_panel.configure(width=1)
             self.sidebar_panel.grid(row=0, column=0, sticky="ew", padx=0, pady=(0, 12))
             self.content_panel.grid(row=1, column=0, sticky="nsew")
-            self.risk_canvas.configure(height=150)
+            self.risk_canvas.configure(height=96)
+            self.risk_text.configure(height=3)
         else:
             self.body_frame.columnconfigure(1, weight=1)
             self.body_frame.rowconfigure(0, weight=1)
             self.sidebar_panel.grid_propagate(False)
-            self.sidebar_panel.configure(width=SIDEBAR_WIDTH)
+            self.sidebar_panel.configure(width=sidebar_width)
             self.sidebar_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 14), pady=0)
             self.content_panel.grid(row=0, column=1, sticky="nsew")
-            self.risk_canvas.configure(height=180)
+            self.risk_canvas.configure(height=150)
+            self.risk_text.configure(height=5)
 
     def _build_stock_tab(self) -> None:
         frame = ttk.Frame(self.tabs, style="Panel.TFrame", padding=10)
@@ -960,13 +968,15 @@ class StockWatchDesktopApp(tk.Tk):
         canvas = self.risk_canvas
         canvas.delete("all")
         width = max(canvas.winfo_width(), 180)
+        height = max(canvas.winfo_height(), 96)
         y = 22
         if not rows:
             canvas.create_text(18, 28, anchor="w", text="暂无评分数据", fill=MUTED, font=FONT)
             return
         name_limit = 7 if width < 230 else 10
         bar_x = 80 if width < 230 else 104
-        for row in rows[:5]:
+        row_limit = max(2, min(5, int((height - 12) / 28)))
+        for row in rows[:row_limit]:
             name = row["name"] or row["code"]
             score = int(row["risk_score"] or 0)
             color = risk_color(row["risk_level"])
