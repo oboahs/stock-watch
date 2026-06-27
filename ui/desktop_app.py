@@ -75,6 +75,26 @@ ORDER BY a.id DESC
 LIMIT 200
 """
 REPORT_PREVIEW_LIMIT = 80_000
+ENV_KEYS = [
+    "LLM_API_KEY",
+    "LLM_BASE_URL",
+    "LLM_MODEL",
+    "SMTP_HOST",
+    "SMTP_PORT",
+    "SMTP_USER",
+    "SMTP_PASSWORD",
+    "SMTP_FROM",
+    "SMTP_TO",
+    "SMTP_USE_SSL",
+    "NEWS_API_KEY",
+    "ALPHA_VANTAGE_API_KEY",
+    "FMP_API_KEY",
+    "FINNHUB_API_KEY",
+    "TELEGRAM_BOT_TOKEN",
+    "TELEGRAM_CHAT_ID",
+    "WECHAT_WEBHOOK_URL",
+    "FEISHU_WEBHOOK_URL",
+]
 
 
 class StockWatchDesktopApp(tk.Tk):
@@ -84,7 +104,7 @@ class StockWatchDesktopApp(tk.Tk):
         self.title("Stock Watch Assistant")
         self._set_window_icon()
         self.geometry("1280x820")
-        self.minsize(1080, 680)
+        self.minsize(860, 560)
         self.configure(bg=BG)
         self.option_add("*Font", FONT)
         self.worker_queue: queue.Queue[tuple[str, object]] = queue.Queue()
@@ -95,6 +115,7 @@ class StockWatchDesktopApp(tk.Tk):
         self.stock_vars: dict[str, tk.Variable] = {}
         self.setting_vars: dict[str, tk.Variable] = {}
         self.env_vars: dict[str, tk.Variable] = {}
+        self.settings_window: tk.Toplevel | None = None
         self.preferred_report_path: str | None = None
         self.refresh_in_progress = False
         self._closing = False
@@ -102,6 +123,9 @@ class StockWatchDesktopApp(tk.Tk):
         self._poll_after_id: str | None = None
         self._snapshot_cache: dict[str, object] = {}
         self._dirty_tabs: set[str] = set()
+        self._compact_body = False
+        self._compact_header = False
+        self._init_form_vars()
         self._setup_style()
         self._build_layout()
         self.load_settings_into_forms()
@@ -119,8 +143,43 @@ class StockWatchDesktopApp(tk.Tk):
         except tk.TclError:
             pass
 
+    def _init_form_vars(self) -> None:
+        self.stock_vars = {
+            "code": tk.StringVar(),
+            "name": tk.StringVar(),
+            "market": tk.StringVar(value="A股"),
+            "themes": tk.StringVar(),
+            "holding": tk.BooleanVar(value=False),
+            "cost": tk.StringVar(),
+            "shares": tk.StringVar(),
+            "support": tk.StringVar(),
+            "resistance": tk.StringVar(),
+            "stop_watch": tk.StringVar(),
+        }
+        self.setting_vars = {
+            "scheduler_enabled": tk.BooleanVar(value=True),
+            "timezone": tk.StringVar(value="Asia/Shanghai"),
+            "times": tk.StringVar(value="08:30, 12:30, 16:00"),
+            "news_akshare": tk.BooleanVar(value=True),
+            "news_max": tk.StringVar(value="8"),
+            "news_search_fallback": tk.BooleanVar(value=True),
+            "news_search_provider": tk.StringVar(value="bing,google"),
+            "news_min_before_search": tk.StringVar(value="2"),
+            "news_sector_enabled": tk.BooleanVar(value=True),
+            "news_sector_max": tk.StringVar(value="4"),
+            "report_output_dir": tk.StringVar(value=""),
+            "report_retention_days": tk.StringVar(value="30"),
+            "llm_enabled": tk.BooleanVar(value=False),
+        }
+        self.env_vars = {
+            key: tk.StringVar(value=self.env_values.get(key, ""))
+            for key in ENV_KEYS
+        }
+
     def close(self) -> None:
         self._closing = True
+        if self.settings_window and self.settings_window.winfo_exists():
+            self.settings_window.destroy()
         for after_id in (self._refresh_after_id, self._poll_after_id):
             if after_id:
                 try:
@@ -165,25 +224,30 @@ class StockWatchDesktopApp(tk.Tk):
     def _build_layout(self) -> None:
         header = ttk.Frame(self, padding=(22, 18, 22, 10))
         header.pack(fill="x")
-        title_box = ttk.Frame(header)
-        title_box.pack(side="left", fill="x", expand=True)
-        ttk.Label(title_box, text="Stock Watch Assistant", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(title_box, text="自选股信息雷达：行情、新闻、风险分、情景和日报都在这里看。", style="Muted.TLabel").pack(anchor="w", pady=(4, 0))
+        header.columnconfigure(0, weight=1)
+        self.header = header
+        self.title_box = ttk.Frame(header)
+        self.title_box.grid(row=0, column=0, sticky="ew")
+        ttk.Label(self.title_box, text="Stock Watch Assistant", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(self.title_box, text="自选股信息雷达：行情、新闻、风险分、情景和日报都在这里看。", style="Muted.TLabel").pack(anchor="w", pady=(4, 0))
 
-        actions = ttk.Frame(header)
-        actions.pack(side="right")
-        ttk.Checkbutton(actions, text="发送邮件", variable=self.email_var).pack(side="left", padx=(0, 8))
-        self.run_button = ttk.Button(actions, text="立即运行雷达", style="Primary.TButton", command=self.run_pipeline)
+        self.header_actions = ttk.Frame(header)
+        self.header_actions.grid(row=0, column=1, sticky="e")
+        ttk.Checkbutton(self.header_actions, text="发送邮件", variable=self.email_var).pack(side="left", padx=(0, 8))
+        self.run_button = ttk.Button(self.header_actions, text="立即运行雷达", style="Primary.TButton", command=self.run_pipeline)
         self.run_button.pack(side="left", padx=4)
-        self.refresh_button = ttk.Button(actions, text="刷新", style="Ghost.TButton", command=self.refresh_all)
+        self.refresh_button = ttk.Button(self.header_actions, text="刷新", style="Ghost.TButton", command=self.refresh_all)
         self.refresh_button.pack(side="left", padx=4)
-        ttk.Button(actions, text="设置中心", style="Ghost.TButton", command=self.show_settings).pack(side="left", padx=4)
-        ttk.Button(actions, text="报告目录", style="Ghost.TButton", command=self.open_report_directory).pack(side="left", padx=4)
+        ttk.Button(self.header_actions, text="设置中心", style="Ghost.TButton", command=self.show_settings).pack(side="left", padx=4)
+        ttk.Button(self.header_actions, text="报告目录", style="Ghost.TButton", command=self.open_report_directory).pack(side="left", padx=4)
 
         self.status_var = tk.StringVar(value="就绪")
         ttk.Label(self, textvariable=self.status_var, style="Muted.TLabel", padding=(22, 0, 22, 8)).pack(fill="x")
 
-        self.kpi_frame = ttk.Frame(self, padding=(22, 4, 22, 8))
+        main_content, self.main_canvas = make_vertical_scroll_frame(self, background=BG)
+        self.main_canvas.bind("<Configure>", self._on_main_canvas_config, add="+")
+
+        self.kpi_frame = ttk.Frame(main_content, padding=(22, 4, 22, 8))
         self.kpi_frame.pack(fill="x")
         self.kpi_labels: dict[str, ttk.Label] = {}
         for key, label in [("stocks", "自选股"), ("high", "高风险"), ("medium", "中风险"), ("reports", "报告数")]:
@@ -194,28 +258,71 @@ class StockWatchDesktopApp(tk.Tk):
             value.pack(anchor="w", pady=(6, 0))
             self.kpi_labels[key] = value
 
-        body = ttk.Frame(self, padding=(22, 0, 22, 18))
-        body.pack(fill="both", expand=True)
-        left = ttk.Frame(body, width=260, style="Panel.TFrame", padding=(14, 14))
-        left.pack(side="left", fill="y", padx=(0, 14))
-        left.pack_propagate(False)
-        ttk.Label(left, text="风险分布", style="Panel.TLabel", font=(FONT_FAMILY, 16, "bold")).pack(anchor="w")
-        self.risk_canvas = tk.Canvas(left, bg=PANEL, highlightthickness=0, height=320)
+        self.body_frame = ttk.Frame(main_content, padding=(22, 0, 22, 18))
+        self.body_frame.pack(fill="both", expand=True)
+        self.body_frame.columnconfigure(1, weight=1)
+        self.body_frame.rowconfigure(0, weight=1)
+        self.sidebar_panel = ttk.Frame(self.body_frame, width=260, style="Panel.TFrame", padding=(14, 14))
+        self.sidebar_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
+        self.sidebar_panel.grid_propagate(False)
+        ttk.Label(self.sidebar_panel, text="风险分布", style="Panel.TLabel", font=(FONT_FAMILY, 16, "bold")).pack(anchor="w")
+        self.risk_canvas = tk.Canvas(self.sidebar_panel, bg=PANEL, highlightthickness=0, height=320)
         self.risk_canvas.pack(fill="x", pady=(12, 16))
-        ttk.Label(left, text="最新风险提醒", style="Panel.TLabel", font=(FONT_FAMILY, 16, "bold")).pack(anchor="w")
-        self.risk_text = tk.Text(left, height=12, wrap="word", bd=0, bg=PANEL, fg=TEXT, font=FONT_SMALL)
+        ttk.Label(self.sidebar_panel, text="最新风险提醒", style="Panel.TLabel", font=(FONT_FAMILY, 16, "bold")).pack(anchor="w")
+        self.risk_text = tk.Text(self.sidebar_panel, height=12, wrap="word", bd=0, bg=PANEL, fg=TEXT, font=FONT_SMALL)
         self.risk_text.pack(fill="both", expand=True, pady=(8, 0))
 
-        right = ttk.Frame(body)
-        right.pack(side="right", fill="both", expand=True)
-        self.tabs = ttk.Notebook(right)
+        self.content_panel = ttk.Frame(self.body_frame)
+        self.content_panel.grid(row=0, column=1, sticky="nsew")
+        self.tabs = ttk.Notebook(self.content_panel)
         self.tabs.pack(fill="both", expand=True)
         self._build_stock_tab()
         self._build_news_tab()
         self._build_report_tab()
         self._build_trend_tab()
-        self._build_settings_tab()
         self.tabs.bind("<<NotebookTabChanged>>", self.on_main_tab_changed)
+
+    def _on_main_canvas_config(self, event: tk.Event) -> None:
+        self._adapt_layout(int(event.width))
+
+    def _adapt_layout(self, width: int) -> None:
+        compact_header = width < 980
+        if compact_header != self._compact_header:
+            self._compact_header = compact_header
+            self.title_box.grid_forget()
+            self.header_actions.grid_forget()
+            if compact_header:
+                self.title_box.grid(row=0, column=0, sticky="ew")
+                self.header_actions.grid(row=1, column=0, sticky="w", pady=(10, 0))
+            else:
+                self.title_box.grid(row=0, column=0, sticky="ew")
+                self.header_actions.grid(row=0, column=1, sticky="e")
+
+        compact_body = width < 1020
+        if compact_body == self._compact_body:
+            return
+        self._compact_body = compact_body
+        self.sidebar_panel.grid_forget()
+        self.content_panel.grid_forget()
+        for index in range(2):
+            self.body_frame.columnconfigure(index, weight=0)
+            self.body_frame.rowconfigure(index, weight=0)
+        if compact_body:
+            self.body_frame.columnconfigure(0, weight=1)
+            self.body_frame.rowconfigure(1, weight=1)
+            self.sidebar_panel.grid_propagate(True)
+            self.sidebar_panel.configure(width=1)
+            self.sidebar_panel.grid(row=0, column=0, sticky="ew", padx=0, pady=(0, 12))
+            self.content_panel.grid(row=1, column=0, sticky="nsew")
+            self.risk_canvas.configure(height=220)
+        else:
+            self.body_frame.columnconfigure(1, weight=1)
+            self.body_frame.rowconfigure(0, weight=1)
+            self.sidebar_panel.grid_propagate(False)
+            self.sidebar_panel.configure(width=260)
+            self.sidebar_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 14), pady=0)
+            self.content_panel.grid(row=0, column=1, sticky="nsew")
+            self.risk_canvas.configure(height=320)
 
     def _build_stock_tab(self) -> None:
         frame = ttk.Frame(self.tabs, style="Panel.TFrame", padding=10)
@@ -255,10 +362,8 @@ class StockWatchDesktopApp(tk.Tk):
         columns = ("生成时间", "名称", "代码", "风险", "风险分", "平均相关性")
         self.trend_tree = make_tree(frame, columns)
 
-    def _build_settings_tab(self) -> None:
-        frame = ttk.Frame(self.tabs, style="Panel.TFrame", padding=10)
-        self.tabs.add(frame, text="设置中心")
-        settings_tabs = ttk.Notebook(frame)
+    def _build_settings_content(self, parent: tk.Misc) -> None:
+        settings_tabs = ttk.Notebook(parent)
         settings_tabs.pack(fill="both", expand=True)
         self._build_watchlist_settings(settings_tabs)
         self._build_runtime_settings(settings_tabs)
@@ -284,18 +389,6 @@ class StockWatchDesktopApp(tk.Tk):
         form_area = ttk.Frame(frame, style="Panel.TFrame")
         form_area.grid(row=0, column=1, sticky="nsew")
         form = make_scrollable_frame(form_area, padding=(12, 0))
-        self.stock_vars = {
-            "code": tk.StringVar(),
-            "name": tk.StringVar(),
-            "market": tk.StringVar(value="A股"),
-            "themes": tk.StringVar(),
-            "holding": tk.BooleanVar(value=False),
-            "cost": tk.StringVar(),
-            "shares": tk.StringVar(),
-            "support": tk.StringVar(),
-            "resistance": tk.StringVar(),
-            "stop_watch": tk.StringVar(),
-        }
         ttk.Label(form, text="代码", style="Panel.TLabel").grid(row=0, column=0, sticky="w", pady=5, padx=(0, 10))
         code_row = ttk.Frame(form, style="Panel.TFrame")
         code_row.grid(row=0, column=1, sticky="ew", pady=5)
@@ -327,21 +420,6 @@ class StockWatchDesktopApp(tk.Tk):
         outer = ttk.Frame(parent, style="Panel.TFrame")
         parent.add(outer, text="运行/数据源")
         frame = make_scrollable_frame(outer, padding=(16, 16))
-        self.setting_vars = {
-            "scheduler_enabled": tk.BooleanVar(value=True),
-            "timezone": tk.StringVar(value="Asia/Shanghai"),
-            "times": tk.StringVar(value="08:30, 12:30, 16:00"),
-            "news_akshare": tk.BooleanVar(value=True),
-            "news_max": tk.StringVar(value="8"),
-            "news_search_fallback": tk.BooleanVar(value=True),
-            "news_search_provider": tk.StringVar(value="bing,google"),
-            "news_min_before_search": tk.StringVar(value="2"),
-            "news_sector_enabled": tk.BooleanVar(value=True),
-            "news_sector_max": tk.StringVar(value="4"),
-            "report_output_dir": tk.StringVar(value=""),
-            "report_retention_days": tk.StringVar(value="30"),
-            "llm_enabled": tk.BooleanVar(value=False),
-        }
         ttk.Label(frame, text="定时任务", style="Panel.TLabel", font=(FONT_FAMILY, 16, "bold")).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
         ttk.Checkbutton(frame, text="启用定时任务", variable=self.setting_vars["scheduler_enabled"]).grid(row=1, column=1, sticky="w", pady=5)
         add_labeled_entry(frame, "时区", self.setting_vars["timezone"], 2)
@@ -388,36 +466,36 @@ class StockWatchDesktopApp(tk.Tk):
         frame.rowconfigure(6, weight=1)
 
     def _build_env_settings(self, parent: ttk.Notebook) -> None:
-        frame = ttk.Frame(parent, style="Panel.TFrame", padding=16)
-        parent.add(frame, text="邮件/推送/API")
-        keys = [
-            ("LLM_API_KEY", "大模型 API Key"),
-            ("LLM_BASE_URL", "大模型 Base URL"),
-            ("LLM_MODEL", "大模型模型名"),
-            ("SMTP_HOST", "SMTP服务器"),
-            ("SMTP_PORT", "SMTP端口"),
-            ("SMTP_USER", "SMTP用户名"),
-            ("SMTP_PASSWORD", "SMTP密码/授权码"),
-            ("SMTP_FROM", "发件人"),
-            ("SMTP_TO", "收件人"),
-            ("SMTP_USE_SSL", "使用SSL true/false"),
-            ("NEWS_API_KEY", "新闻API Key"),
-            ("ALPHA_VANTAGE_API_KEY", "Alpha Vantage API Key"),
-            ("FMP_API_KEY", "Financial Modeling Prep API Key"),
-            ("FINNHUB_API_KEY", "Finnhub API Key"),
-            ("TELEGRAM_BOT_TOKEN", "Telegram Bot Token"),
-            ("TELEGRAM_CHAT_ID", "Telegram Chat ID"),
-            ("WECHAT_WEBHOOK_URL", "企业微信 Webhook"),
-            ("FEISHU_WEBHOOK_URL", "飞书 Webhook"),
-        ]
-        self.env_vars = {}
-        for row, (key, label) in enumerate(keys):
-            self.env_vars[key] = tk.StringVar(value=self.env_values.get(key, ""))
+        outer = ttk.Frame(parent, style="Panel.TFrame")
+        parent.add(outer, text="邮件/推送/API")
+        frame = make_scrollable_frame(outer, padding=(16, 16))
+        labels = {
+            "LLM_API_KEY": "大模型 API Key",
+            "LLM_BASE_URL": "大模型 Base URL",
+            "LLM_MODEL": "大模型模型名",
+            "SMTP_HOST": "SMTP服务器",
+            "SMTP_PORT": "SMTP端口",
+            "SMTP_USER": "SMTP用户名",
+            "SMTP_PASSWORD": "SMTP密码/授权码",
+            "SMTP_FROM": "发件人",
+            "SMTP_TO": "收件人",
+            "SMTP_USE_SSL": "使用SSL true/false",
+            "NEWS_API_KEY": "新闻API Key",
+            "ALPHA_VANTAGE_API_KEY": "Alpha Vantage API Key",
+            "FMP_API_KEY": "Financial Modeling Prep API Key",
+            "FINNHUB_API_KEY": "Finnhub API Key",
+            "TELEGRAM_BOT_TOKEN": "Telegram Bot Token",
+            "TELEGRAM_CHAT_ID": "Telegram Chat ID",
+            "WECHAT_WEBHOOK_URL": "企业微信 Webhook",
+            "FEISHU_WEBHOOK_URL": "飞书 Webhook",
+        }
+        for row, key in enumerate(ENV_KEYS):
+            label = labels[key]
             ttk.Label(frame, text=label, style="Panel.TLabel").grid(row=row, column=0, sticky="w", pady=4)
             show = "*" if key in {"SMTP_PASSWORD", "LLM_API_KEY"} else ""
             entry = ttk.Entry(frame, textvariable=self.env_vars[key], font=FONT_SMALL, show=show)
             entry.grid(row=row, column=1, sticky="ew", pady=4)
-        ttk.Button(frame, text="保存 API/邮件/推送配置", style="Primary.TButton", command=self.save_env_settings).grid(row=len(keys), column=1, sticky="e", pady=(14, 0))
+        ttk.Button(frame, text="保存 API/邮件/推送配置", style="Primary.TButton", command=self.save_env_settings).grid(row=len(ENV_KEYS), column=1, sticky="e", pady=(14, 0))
         frame.columnconfigure(1, weight=1)
 
     def refresh_all(self, reload_forms: bool = False) -> None:
@@ -507,15 +585,15 @@ class StockWatchDesktopApp(tk.Tk):
             self.setting_vars["report_output_dir"].set(str(reports.get("output_dir", "")))
             self.setting_vars["report_retention_days"].set(str(reports.get("retention_days", 30)))
             self.setting_vars["llm_enabled"].set(bool(llm.get("enabled", False)))
-        if hasattr(self, "rss_text"):
+        if widget_alive(getattr(self, "rss_text", None)):
             self.rss_text.delete("1.0", "end")
             for feed in news.get("rss_feeds", []) or []:
                 self.rss_text.insert("end", f"{feed.get('name', '')} | {feed.get('url', '')}\n")
-        if hasattr(self, "macro_endpoint_text"):
+        if widget_alive(getattr(self, "macro_endpoint_text", None)):
             self.macro_endpoint_text.delete("1.0", "end")
             for endpoint in macro.get("endpoints", []) or []:
                 self.macro_endpoint_text.insert("end", f"{endpoint}\n")
-        if hasattr(self, "llm_prompt_text"):
+        if widget_alive(getattr(self, "llm_prompt_text", None)):
             self.llm_prompt_text.delete("1.0", "end")
             self.llm_prompt_text.insert("1.0", str(llm.get("prompt_template") or DEFAULT_LLM_PROMPT))
         if self.env_vars:
@@ -524,7 +602,7 @@ class StockWatchDesktopApp(tk.Tk):
                 var.set(self.env_values.get(key, ""))
 
     def fill_config_stock_tree(self) -> None:
-        if not hasattr(self, "config_stock_tree"):
+        if not widget_alive(getattr(self, "config_stock_tree", None)):
             return
         clear_tree(self.config_stock_tree)
         for index, stock in enumerate(self.config.get("stocks", [])):
@@ -553,8 +631,9 @@ class StockWatchDesktopApp(tk.Tk):
         self.stock_vars["support"].set(", ".join(str(item) for item in key_levels.get("support", []) or []))
         self.stock_vars["resistance"].set(", ".join(str(item) for item in key_levels.get("resistance", []) or []))
         self.stock_vars["stop_watch"].set("" if key_levels.get("stop_watch") is None else str(key_levels.get("stop_watch")))
-        self.stock_notes.delete("1.0", "end")
-        self.stock_notes.insert("1.0", str(stock.get("notes", "")))
+        if widget_alive(getattr(self, "stock_notes", None)):
+            self.stock_notes.delete("1.0", "end")
+            self.stock_notes.insert("1.0", str(stock.get("notes", "")))
 
     def new_stock_form(self) -> None:
         self.selected_stock_index = None
@@ -579,7 +658,7 @@ class StockWatchDesktopApp(tk.Tk):
                 "resistance": parse_float_list(self.stock_vars["resistance"].get()),
                 "stop_watch": parse_optional_float(self.stock_vars["stop_watch"].get()),
             },
-            "notes": self.stock_notes.get("1.0", "end").strip(),
+            "notes": self.stock_notes.get("1.0", "end").strip() if widget_alive(getattr(self, "stock_notes", None)) else "",
         }
 
     def save_stock_form(self) -> None:
@@ -681,6 +760,24 @@ class StockWatchDesktopApp(tk.Tk):
             self.status_var.set(f"保存失败：{exc}")
 
     def persist_settings_from_forms(self) -> None:
+        current_news = self.config.get("news", {}) or {}
+        current_macro = self.config.get("macro", {}) or {}
+        current_llm = self.config.get("llm", {}) or {}
+        rss_feeds = (
+            parse_rss_feeds(self.rss_text.get("1.0", "end"))
+            if widget_alive(getattr(self, "rss_text", None))
+            else current_news.get("rss_feeds", [])
+        )
+        macro_endpoints = (
+            split_lines(self.macro_endpoint_text.get("1.0", "end"))
+            if widget_alive(getattr(self, "macro_endpoint_text", None))
+            else current_macro.get("endpoints", [])
+        )
+        prompt_template = (
+            self.llm_prompt_text.get("1.0", "end").strip()
+            if widget_alive(getattr(self, "llm_prompt_text", None))
+            else current_llm.get("prompt_template", DEFAULT_LLM_PROMPT)
+        )
         self.config["scheduler"] = {
             "enabled": bool(self.setting_vars["scheduler_enabled"].get()),
             "timezone": self.setting_vars["timezone"].get().strip() or "Asia/Shanghai",
@@ -694,10 +791,10 @@ class StockWatchDesktopApp(tk.Tk):
             "min_items_before_search": int(self.setting_vars["news_min_before_search"].get() or 2),
             "enable_sector_news": bool(self.setting_vars["news_sector_enabled"].get()),
             "max_sector_items_per_stock": int(self.setting_vars["news_sector_max"].get() or 4),
-            "rss_feeds": parse_rss_feeds(self.rss_text.get("1.0", "end")),
+            "rss_feeds": rss_feeds,
         }
         self.config["macro"] = {
-            "endpoints": split_lines(self.macro_endpoint_text.get("1.0", "end")),
+            "endpoints": macro_endpoints,
         }
         self.config["reports"] = {
             "output_dir": self.setting_vars["report_output_dir"].get().strip(),
@@ -705,7 +802,7 @@ class StockWatchDesktopApp(tk.Tk):
         }
         self.config["llm"] = {
             "enabled": bool(self.setting_vars["llm_enabled"].get()),
-            "prompt_template": self.llm_prompt_text.get("1.0", "end").strip() or DEFAULT_LLM_PROMPT,
+            "prompt_template": str(prompt_template or DEFAULT_LLM_PROMPT),
         }
         save_watchlist(self.config)
 
@@ -724,7 +821,30 @@ class StockWatchDesktopApp(tk.Tk):
         self.status_var.set("API、邮件和推送配置已保存到 .env。")
 
     def show_settings(self) -> None:
-        self.tabs.select(self.tabs.tabs()[-1])
+        if self.settings_window and self.settings_window.winfo_exists():
+            self.settings_window.lift()
+            self.settings_window.focus_force()
+            return
+        window = tk.Toplevel(self)
+        self.settings_window = window
+        window.title("设置中心")
+        window.geometry("1120x760")
+        window.minsize(820, 560)
+        window.configure(bg=BG)
+        try:
+            window.transient(self)
+        except tk.TclError:
+            pass
+        container = ttk.Frame(window, style="Panel.TFrame", padding=12)
+        container.pack(fill="both", expand=True)
+        self._build_settings_content(container)
+        self.load_settings_into_forms()
+
+        def on_close() -> None:
+            self.settings_window = None
+            window.destroy()
+
+        window.protocol("WM_DELETE_WINDOW", on_close)
 
     def open_report_directory(self) -> None:
         output_dir = str((self.config.get("reports") or {}).get("output_dir") or "").strip()
@@ -1071,6 +1191,39 @@ def make_tree(parent: ttk.Frame, columns: tuple[str, ...]) -> ttk.Treeview:
     return tree
 
 
+def make_vertical_scroll_frame(parent: tk.Misc, background: str = PANEL) -> tuple[ttk.Frame, tk.Canvas]:
+    wrapper = ttk.Frame(parent)
+    wrapper.pack(fill="both", expand=True)
+    canvas = tk.Canvas(wrapper, bg=background, highlightthickness=0)
+    y_scroll = ttk.Scrollbar(wrapper, orient="vertical", command=canvas.yview)
+    inner = ttk.Frame(canvas)
+    window_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+    def resize_scrollregion(_event: tk.Event) -> None:
+        canvas.configure(scrollregion=canvas.bbox("all"))
+
+    def resize_inner(event: tk.Event) -> None:
+        canvas.itemconfigure(window_id, width=event.width)
+
+    def on_mousewheel(event: tk.Event) -> str:
+        if sys.platform == "darwin":
+            delta = -1 if event.delta > 0 else 1
+        else:
+            delta = -1 * int(event.delta / 120) if event.delta else 0
+        if delta:
+            canvas.yview_scroll(delta, "units")
+        return "break"
+
+    inner.bind("<Configure>", resize_scrollregion)
+    canvas.bind("<Configure>", resize_inner)
+    canvas.bind("<MouseWheel>", on_mousewheel)
+    inner.bind("<MouseWheel>", on_mousewheel)
+    canvas.configure(yscrollcommand=y_scroll.set)
+    canvas.pack(side="left", fill="both", expand=True)
+    y_scroll.pack(side="right", fill="y")
+    return inner, canvas
+
+
 def make_scrollable_frame(parent: ttk.Frame, padding: tuple[int, int] = (0, 0)) -> ttk.Frame:
     wrapper = ttk.Frame(parent, style="Panel.TFrame")
     wrapper.pack(fill="both", expand=True)
@@ -1117,6 +1270,13 @@ def add_labeled_entry(parent: ttk.Frame, label: str, variable: tk.Variable, row:
     entry = ttk.Entry(parent, textvariable=variable, font=FONT_SMALL, width=32)
     entry.grid(row=row, column=1, sticky="ew", pady=5)
     return entry
+
+
+def widget_alive(widget: object) -> bool:
+    try:
+        return bool(widget and widget.winfo_exists())
+    except tk.TclError:
+        return False
 
 
 def clear_tree(tree: ttk.Treeview) -> None:
