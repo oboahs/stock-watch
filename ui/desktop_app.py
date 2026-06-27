@@ -76,10 +76,9 @@ LIMIT 200
 """
 REPORT_PREVIEW_LIMIT = 80_000
 NEW_STOCK_IID = "__new_stock__"
-SIDEBAR_MIN_WIDTH = 160
+SIDEBAR_MIN_WIDTH = 140
 SIDEBAR_MAX_WIDTH = 220
 SIDEBAR_FRACTION = 0.18
-SIDEBAR_COMPACT_THRESHOLD = 1180
 ENV_KEYS = [
     "LLM_API_KEY",
     "LLM_BASE_URL",
@@ -128,7 +127,6 @@ class StockWatchDesktopApp(tk.Tk):
         self._poll_after_id: str | None = None
         self._snapshot_cache: dict[str, object] = {}
         self._dirty_tabs: set[str] = set()
-        self._compact_body = False
         self._compact_header = False
         self._init_form_vars()
         self._setup_style()
@@ -265,11 +263,13 @@ class StockWatchDesktopApp(tk.Tk):
 
         self.body_frame = ttk.Frame(main_content, padding=(22, 0, 22, 18))
         self.body_frame.pack(fill="both", expand=True)
-        self.body_frame.columnconfigure(1, weight=1)
+        self.body_frame.columnconfigure(0, weight=0, minsize=SIDEBAR_MIN_WIDTH)
+        self.body_frame.columnconfigure(1, weight=1, minsize=0)
         self.body_frame.rowconfigure(0, weight=1)
         self.sidebar_panel = ttk.Frame(self.body_frame, width=SIDEBAR_MIN_WIDTH, style="Panel.TFrame", padding=(10, 10))
         self.sidebar_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
         self.sidebar_panel.grid_propagate(False)
+        self.sidebar_panel.pack_propagate(False)
         ttk.Label(self.sidebar_panel, text="风险分布", style="Panel.TLabel", font=(FONT_FAMILY, 16, "bold")).pack(anchor="w")
         self.risk_canvas = tk.Canvas(self.sidebar_panel, bg=PANEL, highlightthickness=0, height=150)
         self.risk_canvas.pack(fill="x", pady=(8, 10))
@@ -304,36 +304,19 @@ class StockWatchDesktopApp(tk.Tk):
                 self.title_box.grid(row=0, column=0, sticky="ew")
                 self.header_actions.grid(row=0, column=1, sticky="e")
 
-        compact_body = width < SIDEBAR_COMPACT_THRESHOLD
         sidebar_width = max(SIDEBAR_MIN_WIDTH, min(SIDEBAR_MAX_WIDTH, int(width * SIDEBAR_FRACTION)))
-        if compact_body == self._compact_body:
-            if not compact_body:
-                self.sidebar_panel.configure(width=sidebar_width)
-            return
-        self._compact_body = compact_body
-        self.sidebar_panel.grid_forget()
-        self.content_panel.grid_forget()
-        for index in range(2):
-            self.body_frame.columnconfigure(index, weight=0)
-            self.body_frame.rowconfigure(index, weight=0)
-        if compact_body:
-            self.body_frame.columnconfigure(0, weight=1)
-            self.body_frame.rowconfigure(1, weight=1)
-            self.sidebar_panel.grid_propagate(True)
-            self.sidebar_panel.configure(width=1)
-            self.sidebar_panel.grid(row=0, column=0, sticky="ew", padx=0, pady=(0, 12))
-            self.content_panel.grid(row=1, column=0, sticky="nsew")
-            self.risk_canvas.configure(height=96)
-            self.risk_text.configure(height=3)
-        else:
-            self.body_frame.columnconfigure(1, weight=1)
-            self.body_frame.rowconfigure(0, weight=1)
-            self.sidebar_panel.grid_propagate(False)
-            self.sidebar_panel.configure(width=sidebar_width)
+        self.body_frame.columnconfigure(0, weight=0, minsize=sidebar_width)
+        self.body_frame.columnconfigure(1, weight=1, minsize=0)
+        self.body_frame.rowconfigure(0, weight=1)
+        self.sidebar_panel.grid_propagate(False)
+        self.sidebar_panel.pack_propagate(False)
+        self.sidebar_panel.configure(width=sidebar_width)
+        if not self.sidebar_panel.grid_info():
             self.sidebar_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 14), pady=0)
+        if not self.content_panel.grid_info():
             self.content_panel.grid(row=0, column=1, sticky="nsew")
-            self.risk_canvas.configure(height=150)
-            self.risk_text.configure(height=5)
+        self.risk_canvas.configure(height=150)
+        self.risk_text.configure(height=5)
 
     def _build_stock_tab(self) -> None:
         frame = ttk.Frame(self.tabs, style="Panel.TFrame", padding=10)
