@@ -247,8 +247,9 @@ class StockWatchDesktopApp(tk.Tk):
         self.status_var = tk.StringVar(value="就绪")
         ttk.Label(self, textvariable=self.status_var, style="Muted.TLabel", padding=(22, 0, 22, 8)).pack(fill="x")
 
-        main_content, self.main_canvas = make_vertical_scroll_frame(self, background=BG)
-        self.main_canvas.bind("<Configure>", self._on_main_canvas_config, add="+")
+        main_content = ttk.Frame(self)
+        main_content.pack(fill="both", expand=True)
+        main_content.bind("<Configure>", self._on_main_content_config, add="+")
 
         self.kpi_frame = ttk.Frame(main_content, padding=(22, 4, 22, 8))
         self.kpi_frame.pack(fill="x")
@@ -288,7 +289,7 @@ class StockWatchDesktopApp(tk.Tk):
         self._build_trend_tab()
         self.tabs.bind("<<NotebookTabChanged>>", self.on_main_tab_changed)
 
-    def _on_main_canvas_config(self, event: tk.Event) -> None:
+    def _on_main_content_config(self, event: tk.Event) -> None:
         self._adapt_layout(int(event.width))
 
     def _adapt_layout(self, width: int) -> None:
@@ -342,8 +343,15 @@ class StockWatchDesktopApp(tk.Tk):
         ttk.Button(top, text="打开Markdown", style="Ghost.TButton", command=self.open_selected_report).pack(side="left", padx=(0, 6))
         ttk.Button(top, text="浏览器可视化", style="Primary.TButton", command=self.open_visual_report).pack(side="left")
         ttk.Button(top, text="删除日报", style="Danger.TButton", command=self.delete_selected_report).pack(side="left", padx=(6, 0))
-        self.report_text = tk.Text(frame, wrap="word", bd=0, bg=PANEL, fg=TEXT, font=FONT_SMALL)
-        self.report_text.pack(fill="both", expand=True, pady=(10, 0))
+        preview = ttk.Frame(frame, style="Panel.TFrame")
+        preview.pack(fill="both", expand=True, pady=(10, 0))
+        preview.columnconfigure(0, weight=1)
+        preview.rowconfigure(0, weight=1)
+        self.report_text = tk.Text(preview, wrap="word", bd=0, bg=PANEL, fg=TEXT, font=FONT_SMALL)
+        report_scroll = ttk.Scrollbar(preview, orient="vertical", command=self.report_text.yview)
+        self.report_text.configure(yscrollcommand=report_scroll.set)
+        self.report_text.grid(row=0, column=0, sticky="nsew")
+        report_scroll.grid(row=0, column=1, sticky="ns")
 
     def _build_trend_tab(self) -> None:
         frame = ttk.Frame(self.tabs, style="Panel.TFrame", padding=10)
@@ -1203,39 +1211,6 @@ def make_tree(parent: ttk.Frame, columns: tuple[str, ...]) -> ttk.Treeview:
             width = 140
         tree.column(column, width=width, minwidth=70, anchor="w")
     return tree
-
-
-def make_vertical_scroll_frame(parent: tk.Misc, background: str = PANEL) -> tuple[ttk.Frame, tk.Canvas]:
-    wrapper = ttk.Frame(parent)
-    wrapper.pack(fill="both", expand=True)
-    canvas = tk.Canvas(wrapper, bg=background, highlightthickness=0)
-    y_scroll = ttk.Scrollbar(wrapper, orient="vertical", command=canvas.yview)
-    inner = ttk.Frame(canvas)
-    window_id = canvas.create_window((0, 0), window=inner, anchor="nw")
-
-    def resize_scrollregion(_event: tk.Event) -> None:
-        canvas.configure(scrollregion=canvas.bbox("all"))
-
-    def resize_inner(event: tk.Event) -> None:
-        canvas.itemconfigure(window_id, width=event.width)
-
-    def on_mousewheel(event: tk.Event) -> str:
-        if sys.platform == "darwin":
-            delta = -1 if event.delta > 0 else 1
-        else:
-            delta = -1 * int(event.delta / 120) if event.delta else 0
-        if delta:
-            canvas.yview_scroll(delta, "units")
-        return "break"
-
-    inner.bind("<Configure>", resize_scrollregion)
-    canvas.bind("<Configure>", resize_inner)
-    canvas.bind("<MouseWheel>", on_mousewheel)
-    inner.bind("<MouseWheel>", on_mousewheel)
-    canvas.configure(yscrollcommand=y_scroll.set)
-    canvas.pack(side="left", fill="both", expand=True)
-    y_scroll.pack(side="right", fill="y")
-    return inner, canvas
 
 
 def make_scrollable_frame(parent: ttk.Frame, padding: tuple[int, int] = (0, 0)) -> ttk.Frame:
