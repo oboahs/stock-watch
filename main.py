@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+import re
 from datetime import datetime
 from typing import Any
 
@@ -16,6 +18,9 @@ from collectors.news_data import fetch_news_for_stock
 from config_loader import load_watchlist
 from database import (
     init_db,
+    load_latest_snapshot_before,
+    load_latest_snapshot_for_date,
+    prune_reports,
     save_analysis_snapshot,
     save_macro_events,
     save_market_data,
@@ -25,9 +30,9 @@ from database import (
     upsert_stocks,
 )
 from reports.alert_report import send_email_report
-from reports.daily_report import build_daily_report, build_html_report, save_html_report, save_markdown_report
+from reports.daily_report import build_daily_report, build_html_report, parse_llm_payload, save_html_report, save_markdown_report
 from reports.llm_analysis import run_llm_analysis
-from utils import LOGGER, load_environment, today_compact
+from utils import LOGGER, load_environment, safe_float, today_compact
 
 
 def run_daily_pipeline(send_email: bool = False) -> dict[str, Any]:
@@ -95,28 +100,65 @@ def run_daily_pipeline(send_email: bool = False) -> dict[str, Any]:
             "observation_signals": observation_signals,
             "uncertainties": uncertainties,
             "sentiment_summary": sentiment_summary,
+            "relevance_avg": relevance_avg,
         }
         stock_results.append(result)
-        save_analysis_snapshot(
-            stock["code"],
-            today_compact(),
-            {
-                "relevance_avg": relevance_avg,
-                "sentiment_summary": sentiment_summary,
-                "risk_level": risk["level"],
-                "risk_score": risk["score"],
-                "technical_summary": technical.get("summary"),
-                "scenarios": scenarios,
-                "uncertainties": uncertainties,
-            },
-        )
+
+    run_date = today_compact()
+    for item in stock_results:
+        stock = item.get("stock", {})
+        code = stock.get("code")
+        previous_day = load_latest_snapshot_before(str(code), run_date) if code else None
+        same_day_previous = load_latest_snapshot_for_date(str(code), run_date) if code else None
+        item["_previous_snapshot"] = previous_day
+        item["_same_day_previous"] = same_day_previous
+        item["watch_review"] = build_watch_review(previous_day, item)
+        item["intraday_change"] = build_intraday_change(same_day_previous, item)
 
     llm_analyses, llm_warnings = run_llm_analysis(stock_results, macro_events, config.get("llm", {}))
     warnings.extend(llm_warnings)
     for item in stock_results:
-        code = item.get("stock", {}).get("code")
+        stock = item.get("stock", {})
+        code = stock.get("code")
         if code in llm_analyses:
             item["llm_analysis"] = llm_analyses[code]
+        llm_payload = parse_llm_payload(str(item.get("llm_analysis", ""))) if item.get("llm_analysis") else {}
+        item["llm_payload"] = llm_payload
+        previous_day = item.pop("_previous_snapshot", None)
+        same_day_previous = item.pop("_same_day_previous", None)
+        item["watch_review"] = build_watch_review(previous_day, item)
+        item["intraday_change"] = build_intraday_change(same_day_previous, item)
+        latest = item.get("technical", {}).get("latest") or {}
+        save_analysis_snapshot(
+            str(code),
+            run_date,
+            {
+                "relevance_avg": item.get("relevance_avg", 0),
+                "sentiment_summary": item.get("sentiment_summary", ""),
+                "risk_level": item.get("risk", {}).get("level", ""),
+                "risk_score": item.get("risk", {}).get("score"),
+                "technical_summary": item.get("technical", {}).get("summary"),
+                "scenarios": item.get("scenarios", {}),
+                "uncertainties": item.get("uncertainties", []),
+                "latest_close": latest.get("close"),
+                "change_pct": latest.get("change_pct"),
+                "volume_signal": latest.get("volume_signal", ""),
+                "price_signal": latest.get("price_signal", ""),
+                "news_count": len(item.get("news_analyses", [])),
+                "news_digest": build_news_digest(item.get("news_analyses", [])),
+                "llm_direction": llm_payload.get("direction", ""),
+                "llm_confidence": llm_payload.get("confidence"),
+                "llm_payload": llm_payload,
+                "watch_tomorrow": llm_payload.get("watch_tomorrow", []),
+                "key_levels": llm_payload.get("key_levels", []),
+                "watch_review": item.get("watch_review", []),
+                "intraday_change": item.get("intraday_change", {}),
+            },
+        )
+
+    pruned_reports = prune_reports(parse_retention_days((config.get("reports") or {}).get("retention_days")))
+    if pruned_reports:
+        warnings.append(f"已按保留天数自动清理 {pruned_reports} 份旧日报。")
 
     output_dir = (config.get("reports") or {}).get("output_dir") or None
     report = build_daily_report(stock_results, macro_events, warnings)
@@ -137,6 +179,137 @@ def run_daily_pipeline(send_email: bool = False) -> dict[str, Any]:
         "warnings": warnings,
         "emailed": emailed,
     }
+
+
+def build_watch_review(previous_snapshot: dict[str, Any] | None, item: dict[str, Any]) -> list[dict[str, Any]]:
+    if not previous_snapshot:
+        return []
+    points = load_json_list(previous_snapshot.get("watch_tomorrow_json"))
+    key_levels = load_json_list(previous_snapshot.get("key_levels_json"))
+    for level in key_levels:
+        if isinstance(level, dict):
+            label = level.get("label") or "价位"
+            value = level.get("value") or ""
+            meaning = level.get("meaning") or ""
+            if value:
+                points.append(f"{label} {value} {meaning}".strip())
+    latest = item.get("technical", {}).get("latest") or {}
+    close = safe_float(latest.get("close"))
+    volume_signal = str(latest.get("volume_signal") or "")
+    price_signal = str(latest.get("price_signal") or "")
+    news_count = len(item.get("news_analyses", []))
+    results = []
+    seen = set()
+    for raw_point in points[:8]:
+        point = str(raw_point).strip()
+        if not point or point in seen:
+            continue
+        seen.add(point)
+        status = "待确认"
+        evidence = "需要继续观察"
+        numbers = [safe_float(value) for value in re.findall(r"\d+(?:\.\d+)?", point)]
+        numbers = [value for value in numbers if value is not None]
+        if close is not None and numbers:
+            nearest = min(numbers, key=lambda value: abs(close - value))
+            distance_pct = abs(close - nearest) / nearest * 100 if nearest else None
+            if distance_pct is not None and distance_pct <= 1.5:
+                status = "接近"
+                evidence = f"收盘 {close:.2f}，距 {nearest:g} 约 {distance_pct:.1f}%"
+            elif ("突破" in point or "站上" in point or "压力" in point) and close >= nearest:
+                status = "触发"
+                evidence = f"收盘 {close:.2f} 已高于 {nearest:g}"
+            elif ("跌破" in point or "支撑" in point or "风控" in point) and close <= nearest:
+                status = "触发"
+                evidence = f"收盘 {close:.2f} 已低于或触及 {nearest:g}"
+            else:
+                status = "未触发"
+                evidence = f"收盘 {close:.2f}，观察价位 {nearest:g}"
+        elif "放量" in point and volume_signal == "放量":
+            status = "触发"
+            evidence = "成交量信号为放量"
+        elif "缩量" in point and volume_signal == "缩量":
+            status = "触发"
+            evidence = "成交量信号为缩量"
+        elif any(word in point for word in ["新闻", "公告", "事件"]) and news_count:
+            status = "有更新"
+            evidence = f"本次取得 {news_count} 条新闻/公告样本"
+        elif price_signal and price_signal != "区间震荡":
+            evidence = price_signal
+        results.append({"point": point, "status": status, "evidence": evidence, "previous_run": previous_snapshot.get("created_at", "")})
+    return results
+
+
+def build_intraday_change(previous_snapshot: dict[str, Any] | None, item: dict[str, Any]) -> dict[str, Any]:
+    if not previous_snapshot:
+        return {"has_previous": False, "items": [], "new_news": []}
+    latest = item.get("technical", {}).get("latest") or {}
+    items = []
+    current_close = safe_float(latest.get("close"))
+    previous_close = safe_float(previous_snapshot.get("latest_close"))
+    if current_close is not None and previous_close is not None:
+        delta = current_close - previous_close
+        delta_pct = delta / previous_close * 100 if previous_close else 0
+        if abs(delta_pct) >= 0.2:
+            items.append({"label": "价格变化", "value": f"{delta:+.2f} / {delta_pct:+.2f}%", "level": "up" if delta > 0 else "down"})
+    current_risk = safe_float(item.get("risk", {}).get("score"))
+    previous_risk = safe_float(previous_snapshot.get("risk_score"))
+    if current_risk is not None and previous_risk is not None:
+        delta = current_risk - previous_risk
+        if abs(delta) >= 3:
+            items.append({"label": "风险分变化", "value": f"{delta:+.0f}", "level": "down" if delta > 0 else "up"})
+    payload = item.get("llm_payload") or {}
+    previous_direction = str(previous_snapshot.get("llm_direction") or "")
+    current_direction = str(payload.get("direction") or "")
+    if previous_direction and current_direction and previous_direction != current_direction:
+        items.append({"label": "大模型方向变化", "value": f"{previous_direction} -> {current_direction}", "level": "neutral"})
+    previous_conf = safe_float(previous_snapshot.get("llm_confidence"))
+    current_conf = safe_float(payload.get("confidence"))
+    if previous_conf is not None and current_conf is not None:
+        delta = current_conf - previous_conf
+        if abs(delta) >= 8:
+            items.append({"label": "置信度变化", "value": f"{delta:+.0f}", "level": "neutral"})
+    previous_news = load_json_list(previous_snapshot.get("news_digest_json"))
+    previous_titles = {str(news.get("title", "")) for news in previous_news if isinstance(news, dict)}
+    current_news = build_news_digest(item.get("news_analyses", []))
+    new_news = [news for news in current_news if news.get("title") not in previous_titles][:5]
+    if new_news:
+        items.append({"label": "新增新闻", "value": f"{len(new_news)} 条", "level": "neutral"})
+    return {"has_previous": True, "previous_run": previous_snapshot.get("created_at", ""), "items": items, "new_news": new_news}
+
+
+def build_news_digest(news_analyses: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows = []
+    for news in sorted(news_analyses, key=lambda item: item.get("relevance_score", 0), reverse=True)[:12]:
+        rows.append(
+            {
+                "title": news.get("title", ""),
+                "source": news.get("source", ""),
+                "url": news.get("url", ""),
+                "sentiment": news.get("sentiment", ""),
+                "relevance_score": news.get("relevance_score", 0),
+            }
+        )
+    return rows
+
+
+def load_json_list(value: Any) -> list[Any]:
+    if not value:
+        return []
+    if isinstance(value, list):
+        return value
+    try:
+        parsed = json.loads(str(value))
+        return parsed if isinstance(parsed, list) else []
+    except json.JSONDecodeError:
+        return []
+
+
+def parse_retention_days(value: Any) -> int | None:
+    try:
+        days = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return days if days > 0 else None
 
 
 def build_observation_signals(stock: dict[str, Any], technical: dict[str, Any], risk: dict[str, Any], news_analyses: list[dict[str, Any]]) -> list[str]:

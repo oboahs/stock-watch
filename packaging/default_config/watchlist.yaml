@@ -18,6 +18,7 @@ macro:
   endpoints: []
 reports:
   output_dir: ""
+  retention_days: 30
 llm:
   enabled: false
   prompt_template: ""

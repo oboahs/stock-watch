@@ -30,6 +30,7 @@ DEFAULT_NEWS = {
 
 DEFAULT_REPORTS = {
     "output_dir": "",
+    "retention_days": 30,
 }
 
 DEFAULT_LLM = {

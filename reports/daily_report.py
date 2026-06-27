@@ -136,6 +136,18 @@ def build_daily_report(
         lines.append("- 观察信号：")
         for signal in item.get("observation_signals", ["暂无"]):
             lines.append(f"  - {signal}")
+        if item.get("watch_review"):
+            lines.append("- 昨日观察复盘：")
+            for row in item.get("watch_review", [])[:6]:
+                lines.append(f"  - {row.get('status', '待确认')}：{row.get('point', '')}（{row.get('evidence', '')}）")
+        if item.get("intraday_change", {}).get("has_previous"):
+            lines.append("- 本日新增变化：")
+            change_items = item.get("intraday_change", {}).get("items", []) or []
+            if change_items:
+                for row in change_items:
+                    lines.append(f"  - {row.get('label', '')}：{row.get('value', '')}")
+            else:
+                lines.append("  - 相对上一份同日日报，未发现足够显著的新变化。")
 
         lines.append("- 走势情景：")
         for scenario in item.get("scenarios", {}).values():
@@ -389,6 +401,20 @@ def build_llm_first_html_report(
     .visual-grid {{ display: grid; grid-template-columns: 1.15fr .85fr; gap: 12px; margin-top: 12px; }}
     .signal-panel {{ background: #f8fafc; border: 1px solid var(--line); border-radius: 8px; padding: 14px; }}
     .signal-panel ul {{ margin: 8px 0 0; padding-left: 18px; }}
+    .change-grid {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }}
+    .change-card {{ background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; box-shadow: var(--shadow); }}
+    .change-card strong {{ display: block; font-size: 18px; margin: 5px 0 6px; }}
+    .status-row {{ display: flex; align-items: flex-start; gap: 10px; border-top: 1px solid var(--line); padding: 10px 0; }}
+    .status-row:first-child {{ border-top: 0; padding-top: 0; }}
+    .status-badge {{ flex: 0 0 auto; min-width: 58px; text-align: center; border-radius: 999px; padding: 3px 8px; font-size: 12px; font-weight: 700; }}
+    .status-trigger {{ color: #fff; background: var(--green); }}
+    .status-near {{ color: #7c2d12; background: #fed7aa; }}
+    .status-pending {{ color: #334155; background: #e2e8f0; }}
+    .status-update {{ color: #fff; background: var(--blue); }}
+    .delta-pill {{ display: inline-flex; align-items: center; border-radius: 999px; padding: 4px 9px; font-size: 12px; font-weight: 700; margin: 4px 6px 4px 0; }}
+    .delta-up {{ color: #166534; background: #dcfce7; }}
+    .delta-down {{ color: #991b1b; background: #fee2e2; }}
+    .delta-neutral {{ color: #334155; background: #e2e8f0; }}
     .gauge {{ height: 12px; background: #e8edf5; border-radius: 999px; overflow: hidden; margin: 8px 0 4px; }}
     .gauge > i {{ display: block; height: 100%; border-radius: 999px; }}
     .meter-label {{ display: flex; justify-content: space-between; color: var(--muted); font-size: 12px; }}
@@ -417,7 +443,7 @@ def build_llm_first_html_report(
     .source-title a:hover {{ text-decoration: underline; }}
     .source-meta {{ color: var(--muted); font-size: 13px; margin: 4px 0 8px; }}
     .list {{ margin: 8px 0 0; padding-left: 18px; }}
-    @media (max-width: 980px) {{ .kpis, .grid, .llm-card-grid, .visual-grid, .scenario-strip {{ grid-template-columns: 1fr; }} header {{ padding: 22px 18px; }} main {{ padding: 16px; }} .compare-table {{ display: block; overflow-x: auto; }} }}
+    @media (max-width: 980px) {{ .kpis, .grid, .llm-card-grid, .visual-grid, .scenario-strip, .change-grid {{ grid-template-columns: 1fr; }} header {{ padding: 22px 18px; }} main {{ padding: 16px; }} .compare-table {{ display: block; overflow-x: auto; }} }}
   </style>
 </head>
 <body>
@@ -434,6 +460,8 @@ def build_llm_first_html_report(
   <main>
     <h2>大模型横向对比</h2>
     {render_llm_comparison_table(llm_items)}
+    <h2>观察兑现与新增变化</h2>
+    {render_change_dashboard(llm_items)}
     <h2>大模型核心结论卡片</h2>
     <div class="grid">{''.join(render_llm_summary_card(item) for item in llm_items)}</div>
     <h2>逐股大模型分析</h2>
@@ -725,11 +753,94 @@ def render_llm_stock_detail(item: dict[str, Any]) -> str:
       </div>
       <div class="scenario-strip">{scenario_html}</div>
       <div class="visual-grid">
+        <div class="signal-panel"><strong>昨日观察复盘</strong>{render_watch_review(item)}</div>
+        <div class="signal-panel"><strong>本日新增变化</strong>{render_intraday_change(item)}</div>
+      </div>
+      <div class="visual-grid">
         <div class="signal-panel"><strong>持仓框架</strong>{render_compact_list(payload['holding_framework'], '未明确')}</div>
         <div class="signal-panel"><strong>明日重点观察</strong>{render_compact_list(payload['watch_tomorrow'], '未明确')}</div>
       </div>
       {details}
     </section>"""
+
+
+def render_change_dashboard(items: list[dict[str, Any]]) -> str:
+    triggered = 0
+    near = 0
+    new_changes = 0
+    for item in items:
+        for row in item.get("watch_review", []) or []:
+            status = str(row.get("status", ""))
+            if status in {"触发", "有更新"}:
+                triggered += 1
+            elif status == "接近":
+                near += 1
+        change = item.get("intraday_change") or {}
+        new_changes += len(change.get("items", []) or [])
+    return f"""<div class="change-grid">
+      <div class="change-card"><span class="muted">昨日观察点</span><strong>{triggered}</strong><div>已经触发或出现更新</div></div>
+      <div class="change-card"><span class="muted">接近触发</span><strong>{near}</strong><div>需要盘中继续盯住</div></div>
+      <div class="change-card"><span class="muted">同日新变化</span><strong>{new_changes}</strong><div>相对上一份日报的增量信号</div></div>
+    </div>"""
+
+
+def render_watch_review(item: dict[str, Any]) -> str:
+    rows = item.get("watch_review", []) or []
+    if not rows:
+        return '<p class="muted">没有上一交易日的“明日重点观察”记录，生成两天以上日报后会自动复盘。</p>'
+    html = []
+    for row in rows[:8]:
+        status = str(row.get("status") or "待确认")
+        html.append(
+            f"""<div class="status-row">
+              {status_badge(status)}
+              <div><strong>{escape(str(row.get('point', '')))}</strong><br><span class="muted">{escape(str(row.get('evidence', '')))}</span></div>
+            </div>"""
+        )
+    return "".join(html)
+
+
+def render_intraday_change(item: dict[str, Any]) -> str:
+    change = item.get("intraday_change") or {}
+    if not change.get("has_previous"):
+        return '<p class="muted">这是当日第一份快照；同一天再次运行后会显示行情、风险、新闻和大模型方向的变化。</p>'
+    rows = change.get("items", []) or []
+    news = change.get("new_news", []) or []
+    if not rows and not news:
+        return '<p class="muted">相对上一份同日日报，未发现足够显著的新变化。</p>'
+    chips = []
+    for row in rows:
+        level = str(row.get("level") or "neutral")
+        chips.append(f'<span class="delta-pill {delta_class(level)}">{escape(str(row.get("label", "")))}：{escape(str(row.get("value", "")))}</span>')
+    if news:
+        links = []
+        for news_item in news[:4]:
+            title = escape(str(news_item.get("title") or "新增新闻"))
+            url = str(news_item.get("url") or "").strip()
+            if url.startswith(("http://", "https://")):
+                links.append(f'<li><a href="{escape(url, quote=True)}" target="_blank" rel="noopener noreferrer">{title}</a></li>')
+            else:
+                links.append(f"<li>{title}</li>")
+        chips.append("<ul>" + "".join(links) + "</ul>")
+    return "".join(chips)
+
+
+def status_badge(status: str) -> str:
+    if status in {"触发", "有更新"}:
+        css = "status-trigger" if status == "触发" else "status-update"
+    elif status == "接近":
+        css = "status-near"
+    else:
+        css = "status-pending"
+    return f'<span class="status-badge {css}">{escape(status)}</span>'
+
+
+def delta_class(level: str) -> str:
+    if level == "up":
+        return "delta-up"
+    if level == "down":
+        return "delta-down"
+    return "delta-neutral"
 
 
 def render_confidence(confidence: int) -> str:

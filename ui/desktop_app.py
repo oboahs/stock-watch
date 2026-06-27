@@ -17,23 +17,25 @@ if str(ROOT) not in sys.path:
 
 from config_loader import load_watchlist, save_watchlist
 from collectors.stock_profile import lookup_stock_profile
-from database import init_db, sync_stocks
+from database import delete_report_by_path, init_db, sync_stocks
 from main import run_daily_pipeline
 from reports.daily_report import markdown_to_basic_html
 from reports.llm_analysis import DEFAULT_LLM_PROMPT
 from utils import BUNDLE_ROOT, DB_PATH, ENV_EXAMPLE_PATH, ENV_PATH, REPORT_DIR
 
 
-FONT = ("PingFang SC", 13)
-FONT_SMALL = ("PingFang SC", 11)
-FONT_TITLE = ("PingFang SC", 22, "bold")
-BG = "#f6f7f9"
+FONT_FAMILY = "Microsoft YaHei UI" if sys.platform.startswith("win") else "PingFang SC"
+FONT = (FONT_FAMILY, 13)
+FONT_SMALL = (FONT_FAMILY, 11)
+FONT_TITLE = (FONT_FAMILY, 22, "bold")
+BG = "#eef2f7"
 PANEL = "#ffffff"
-TEXT = "#172033"
-MUTED = "#667085"
-GREEN = "#1f9d55"
-AMBER = "#d97706"
-RED = "#dc2626"
+PANEL_ALT = "#f8fafc"
+TEXT = "#111827"
+MUTED = "#64748b"
+GREEN = "#168a4a"
+AMBER = "#c77700"
+RED = "#d92d20"
 BLUE = "#2563eb"
 STOCKS_QUERY = """
 WITH latest_snapshot AS (
@@ -72,7 +74,7 @@ LEFT JOIN stocks s ON s.code = a.code
 ORDER BY a.id DESC
 LIMIT 200
 """
-REPORT_PREVIEW_LIMIT = 200_000
+REPORT_PREVIEW_LIMIT = 80_000
 
 
 class StockWatchDesktopApp(tk.Tk):
@@ -84,6 +86,7 @@ class StockWatchDesktopApp(tk.Tk):
         self.geometry("1280x820")
         self.minsize(1080, 680)
         self.configure(bg=BG)
+        self.option_add("*Font", FONT)
         self.worker_queue: queue.Queue[tuple[str, object]] = queue.Queue()
         self.email_var = tk.BooleanVar(value=False)
         self.config = load_config_safe()
@@ -135,18 +138,29 @@ class StockWatchDesktopApp(tk.Tk):
         style.configure("Muted.TLabel", background=BG, foreground=MUTED, font=FONT_SMALL)
         style.configure("Panel.TLabel", background=PANEL, foreground=TEXT, font=FONT)
         style.configure("Title.TLabel", background=BG, foreground=TEXT, font=FONT_TITLE)
-        style.configure("TButton", font=FONT_SMALL, padding=(12, 8))
-        style.configure("Compact.TButton", font=FONT_SMALL, padding=(8, 5))
-        style.configure("Primary.TButton", font=FONT_SMALL, padding=(14, 9))
+        style.configure("TButton", font=FONT_SMALL, padding=(12, 8), borderwidth=0, focusthickness=0)
+        style.configure("Compact.TButton", font=FONT_SMALL, padding=(9, 6), borderwidth=0)
+        style.configure("Primary.TButton", font=FONT_SMALL, padding=(14, 9), background=BLUE, foreground="#ffffff", borderwidth=0)
+        style.configure("Ghost.TButton", font=FONT_SMALL, padding=(12, 8), background=PANEL_ALT, foreground=TEXT, borderwidth=0)
+        style.configure("Danger.TButton", font=FONT_SMALL, padding=(12, 8), background="#fee2e2", foreground=RED, borderwidth=0)
+        style.map("TButton", background=[("active", "#e2e8f0")])
+        style.map("Primary.TButton", background=[("active", "#1d4ed8"), ("disabled", "#93c5fd")], foreground=[("disabled", "#eff6ff")])
+        style.map("Ghost.TButton", background=[("active", "#e2e8f0")])
+        style.map("Danger.TButton", background=[("active", "#fecaca")], foreground=[("active", "#991b1b")])
+        style.configure("TEntry", fieldbackground=PANEL, foreground=TEXT, borderwidth=1, padding=(8, 6))
+        style.configure("TCombobox", fieldbackground=PANEL, foreground=TEXT, borderwidth=1, padding=(8, 6))
         style.configure("TNotebook", background=BG, borderwidth=0)
-        style.configure("TNotebook.Tab", font=("PingFang SC", 11), padding=(10, 5))
+        style.configure("TNotebook.Tab", font=(FONT_FAMILY, 11), padding=(12, 6), background="#e2e8f0", foreground=MUTED)
         style.map(
             "TNotebook.Tab",
-            font=[("selected", ("PingFang SC", 11, "bold"))],
-            padding=[("selected", (12, 6))],
+            font=[("selected", (FONT_FAMILY, 12, "bold"))],
+            padding=[("selected", (16, 8))],
+            background=[("selected", PANEL), ("active", "#f1f5f9")],
+            foreground=[("selected", TEXT), ("active", TEXT)],
         )
-        style.configure("Treeview", font=FONT_SMALL, rowheight=30, background=PANEL, fieldbackground=PANEL)
-        style.configure("Treeview.Heading", font=("PingFang SC", 12, "bold"))
+        style.configure("Treeview", font=FONT_SMALL, rowheight=32, background=PANEL, fieldbackground=PANEL, foreground=TEXT, borderwidth=0)
+        style.configure("Treeview.Heading", font=(FONT_FAMILY, 12, "bold"), background=PANEL_ALT, foreground=TEXT, borderwidth=0)
+        style.map("Treeview", background=[("selected", "#dbeafe")], foreground=[("selected", TEXT)])
 
     def _build_layout(self) -> None:
         header = ttk.Frame(self, padding=(22, 18, 22, 10))
@@ -161,10 +175,10 @@ class StockWatchDesktopApp(tk.Tk):
         ttk.Checkbutton(actions, text="发送邮件", variable=self.email_var).pack(side="left", padx=(0, 8))
         self.run_button = ttk.Button(actions, text="立即运行雷达", style="Primary.TButton", command=self.run_pipeline)
         self.run_button.pack(side="left", padx=4)
-        self.refresh_button = ttk.Button(actions, text="刷新", command=self.refresh_all)
+        self.refresh_button = ttk.Button(actions, text="刷新", style="Ghost.TButton", command=self.refresh_all)
         self.refresh_button.pack(side="left", padx=4)
-        ttk.Button(actions, text="设置中心", command=self.show_settings).pack(side="left", padx=4)
-        ttk.Button(actions, text="报告目录", command=self.open_report_directory).pack(side="left", padx=4)
+        ttk.Button(actions, text="设置中心", style="Ghost.TButton", command=self.show_settings).pack(side="left", padx=4)
+        ttk.Button(actions, text="报告目录", style="Ghost.TButton", command=self.open_report_directory).pack(side="left", padx=4)
 
         self.status_var = tk.StringVar(value="就绪")
         ttk.Label(self, textvariable=self.status_var, style="Muted.TLabel", padding=(22, 0, 22, 8)).pack(fill="x")
@@ -176,7 +190,7 @@ class StockWatchDesktopApp(tk.Tk):
             card = ttk.Frame(self.kpi_frame, style="Panel.TFrame", padding=(18, 14))
             card.pack(side="left", fill="x", expand=True, padx=(0, 12))
             ttk.Label(card, text=label, style="Panel.TLabel").pack(anchor="w")
-            value = ttk.Label(card, text="0", style="Panel.TLabel", font=("PingFang SC", 24, "bold"))
+            value = ttk.Label(card, text="0", style="Panel.TLabel", font=(FONT_FAMILY, 24, "bold"))
             value.pack(anchor="w", pady=(6, 0))
             self.kpi_labels[key] = value
 
@@ -185,10 +199,10 @@ class StockWatchDesktopApp(tk.Tk):
         left = ttk.Frame(body, width=260, style="Panel.TFrame", padding=(14, 14))
         left.pack(side="left", fill="y", padx=(0, 14))
         left.pack_propagate(False)
-        ttk.Label(left, text="风险分布", style="Panel.TLabel", font=("PingFang SC", 16, "bold")).pack(anchor="w")
+        ttk.Label(left, text="风险分布", style="Panel.TLabel", font=(FONT_FAMILY, 16, "bold")).pack(anchor="w")
         self.risk_canvas = tk.Canvas(left, bg=PANEL, highlightthickness=0, height=320)
         self.risk_canvas.pack(fill="x", pady=(12, 16))
-        ttk.Label(left, text="最新风险提醒", style="Panel.TLabel", font=("PingFang SC", 16, "bold")).pack(anchor="w")
+        ttk.Label(left, text="最新风险提醒", style="Panel.TLabel", font=(FONT_FAMILY, 16, "bold")).pack(anchor="w")
         self.risk_text = tk.Text(left, height=12, wrap="word", bd=0, bg=PANEL, fg=TEXT, font=FONT_SMALL)
         self.risk_text.pack(fill="both", expand=True, pady=(8, 0))
 
@@ -223,9 +237,10 @@ class StockWatchDesktopApp(tk.Tk):
         self.report_choice = ttk.Combobox(top, state="readonly", font=FONT_SMALL)
         self.report_choice.pack(side="left", fill="x", expand=True, padx=(0, 8))
         self.report_choice.bind("<<ComboboxSelected>>", lambda _event: self.load_selected_report())
-        ttk.Button(top, text="加载预览", command=self.load_selected_report).pack(side="left", padx=(0, 6))
-        ttk.Button(top, text="打开Markdown", command=self.open_selected_report).pack(side="left", padx=(0, 6))
+        ttk.Button(top, text="加载预览", style="Ghost.TButton", command=self.load_selected_report).pack(side="left", padx=(0, 6))
+        ttk.Button(top, text="打开Markdown", style="Ghost.TButton", command=self.open_selected_report).pack(side="left", padx=(0, 6))
         ttk.Button(top, text="浏览器可视化", style="Primary.TButton", command=self.open_visual_report).pack(side="left")
+        ttk.Button(top, text="删除日报", style="Danger.TButton", command=self.delete_selected_report).pack(side="left", padx=(6, 0))
         self.report_text = tk.Text(frame, wrap="word", bd=0, bg=PANEL, fg=TEXT, font=FONT_SMALL)
         self.report_text.pack(fill="both", expand=True, pady=(10, 0))
 
@@ -234,7 +249,7 @@ class StockWatchDesktopApp(tk.Tk):
         self.tabs.add(frame, text="趋势对比")
         top = ttk.Frame(frame, style="Panel.TFrame")
         top.pack(fill="x", pady=(0, 8))
-        ttk.Label(top, text="近几份日报横向对比：风险分与新闻相关性", style="Panel.TLabel", font=("PingFang SC", 15, "bold")).pack(side="left")
+        ttk.Label(top, text="近几份日报横向对比：风险分与新闻相关性", style="Panel.TLabel", font=(FONT_FAMILY, 15, "bold")).pack(side="left")
         self.trend_canvas = tk.Canvas(frame, bg=PANEL, highlightthickness=0, height=280)
         self.trend_canvas.pack(fill="x", pady=(0, 10))
         columns = ("生成时间", "名称", "代码", "风险", "风险分", "平均相关性")
@@ -324,13 +339,14 @@ class StockWatchDesktopApp(tk.Tk):
             "news_sector_enabled": tk.BooleanVar(value=True),
             "news_sector_max": tk.StringVar(value="4"),
             "report_output_dir": tk.StringVar(value=""),
+            "report_retention_days": tk.StringVar(value="30"),
             "llm_enabled": tk.BooleanVar(value=False),
         }
-        ttk.Label(frame, text="定时任务", style="Panel.TLabel", font=("PingFang SC", 16, "bold")).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        ttk.Label(frame, text="定时任务", style="Panel.TLabel", font=(FONT_FAMILY, 16, "bold")).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
         ttk.Checkbutton(frame, text="启用定时任务", variable=self.setting_vars["scheduler_enabled"]).grid(row=1, column=1, sticky="w", pady=5)
         add_labeled_entry(frame, "时区", self.setting_vars["timezone"], 2)
         add_labeled_entry(frame, "运行时间，逗号分隔", self.setting_vars["times"], 3)
-        ttk.Label(frame, text="新闻数据", style="Panel.TLabel", font=("PingFang SC", 16, "bold")).grid(row=4, column=0, columnspan=2, sticky="w", pady=(18, 8))
+        ttk.Label(frame, text="新闻数据", style="Panel.TLabel", font=(FONT_FAMILY, 16, "bold")).grid(row=4, column=0, columnspan=2, sticky="w", pady=(18, 8))
         ttk.Checkbutton(frame, text="优先使用 AKShare 东方财富个股新闻", variable=self.setting_vars["news_akshare"]).grid(row=5, column=1, sticky="w", pady=5)
         add_labeled_entry(frame, "每只股票新闻数", self.setting_vars["news_max"], 6)
         ttk.Checkbutton(frame, text="默认源不足时启用搜索引擎新闻兜底", variable=self.setting_vars["news_search_fallback"]).grid(row=7, column=1, sticky="w", pady=5)
@@ -341,7 +357,7 @@ class StockWatchDesktopApp(tk.Tk):
         ttk.Label(frame, text="RSS 源，每行格式：名称 | URL", style="Panel.TLabel").grid(row=12, column=0, sticky="nw", pady=5)
         self.rss_text = tk.Text(frame, height=5, wrap="word", bd=1, relief="solid", font=FONT_SMALL)
         self.rss_text.grid(row=12, column=1, sticky="ew", pady=5)
-        ttk.Label(frame, text="宏观事件", style="Panel.TLabel", font=("PingFang SC", 16, "bold")).grid(row=13, column=0, columnspan=2, sticky="w", pady=(18, 8))
+        ttk.Label(frame, text="宏观事件", style="Panel.TLabel", font=(FONT_FAMILY, 16, "bold")).grid(row=13, column=0, columnspan=2, sticky="w", pady=(18, 8))
         ttk.Label(frame, text="宏观 API URL，每行一个", style="Panel.TLabel").grid(row=14, column=0, sticky="nw", pady=5)
         self.macro_endpoint_text = tk.Text(frame, height=4, wrap="word", bd=1, relief="solid", font=FONT_SMALL)
         self.macro_endpoint_text.grid(row=14, column=1, sticky="ew", pady=5)
@@ -353,22 +369,23 @@ class StockWatchDesktopApp(tk.Tk):
         parent.add(frame, text="报告/大模型")
         frame.columnconfigure(1, weight=1)
 
-        ttk.Label(frame, text="日报", style="Panel.TLabel", font=("PingFang SC", 16, "bold")).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        ttk.Label(frame, text="日报", style="Panel.TLabel", font=(FONT_FAMILY, 16, "bold")).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
         ttk.Label(frame, text="日报保存目录", style="Panel.TLabel").grid(row=1, column=0, sticky="w", pady=5, padx=(0, 10))
         report_dir_row = ttk.Frame(frame, style="Panel.TFrame")
         report_dir_row.grid(row=1, column=1, sticky="ew", pady=5)
         report_dir_row.columnconfigure(0, weight=1)
         ttk.Entry(report_dir_row, textvariable=self.setting_vars["report_output_dir"], font=FONT_SMALL, width=38).grid(row=0, column=0, sticky="ew")
         ttk.Button(report_dir_row, text="选择目录", style="Compact.TButton", command=self.choose_report_output_dir).grid(row=0, column=1, sticky="e", padx=(8, 0))
-        ttk.Button(frame, text="打开当前报告目录", command=self.open_report_directory).grid(row=2, column=1, sticky="w", pady=(4, 12))
+        add_labeled_entry(frame, "日报保留天数，0为不清理", self.setting_vars["report_retention_days"], 2)
+        ttk.Button(frame, text="打开当前报告目录", style="Ghost.TButton", command=self.open_report_directory).grid(row=3, column=1, sticky="w", pady=(4, 12))
 
-        ttk.Label(frame, text="大模型分析", style="Panel.TLabel", font=("PingFang SC", 16, "bold")).grid(row=3, column=0, columnspan=2, sticky="w", pady=(10, 8))
-        ttk.Checkbutton(frame, text="启用 API 大模型分析日报", variable=self.setting_vars["llm_enabled"]).grid(row=4, column=1, sticky="w", pady=5)
-        ttk.Label(frame, text="预设提示词", style="Panel.TLabel").grid(row=5, column=0, sticky="nw", pady=5)
+        ttk.Label(frame, text="大模型分析", style="Panel.TLabel", font=(FONT_FAMILY, 16, "bold")).grid(row=4, column=0, columnspan=2, sticky="w", pady=(10, 8))
+        ttk.Checkbutton(frame, text="启用 API 大模型分析日报", variable=self.setting_vars["llm_enabled"]).grid(row=5, column=1, sticky="w", pady=5)
+        ttk.Label(frame, text="预设提示词", style="Panel.TLabel").grid(row=6, column=0, sticky="nw", pady=5)
         self.llm_prompt_text = tk.Text(frame, height=14, wrap="word", bd=1, relief="solid", font=FONT_SMALL)
-        self.llm_prompt_text.grid(row=5, column=1, sticky="nsew", pady=5)
-        ttk.Button(frame, text="保存报告配置", style="Primary.TButton", command=self.save_runtime_settings).grid(row=6, column=1, sticky="w", pady=(14, 0))
-        frame.rowconfigure(5, weight=1)
+        self.llm_prompt_text.grid(row=6, column=1, sticky="nsew", pady=5)
+        ttk.Button(frame, text="保存报告配置", style="Primary.TButton", command=self.save_runtime_settings).grid(row=7, column=1, sticky="w", pady=(14, 0))
+        frame.rowconfigure(6, weight=1)
 
     def _build_env_settings(self, parent: ttk.Notebook) -> None:
         frame = ttk.Frame(parent, style="Panel.TFrame", padding=16)
@@ -488,6 +505,7 @@ class StockWatchDesktopApp(tk.Tk):
             self.setting_vars["news_sector_enabled"].set(bool(news.get("enable_sector_news", True)))
             self.setting_vars["news_sector_max"].set(str(news.get("max_sector_items_per_stock", 4)))
             self.setting_vars["report_output_dir"].set(str(reports.get("output_dir", "")))
+            self.setting_vars["report_retention_days"].set(str(reports.get("retention_days", 30)))
             self.setting_vars["llm_enabled"].set(bool(llm.get("enabled", False)))
         if hasattr(self, "rss_text"):
             self.rss_text.delete("1.0", "end")
@@ -683,6 +701,7 @@ class StockWatchDesktopApp(tk.Tk):
         }
         self.config["reports"] = {
             "output_dir": self.setting_vars["report_output_dir"].get().strip(),
+            "retention_days": parse_optional_int(self.setting_vars["report_retention_days"].get(), default=30),
         }
         self.config["llm"] = {
             "enabled": bool(self.setting_vars["llm_enabled"].get()),
@@ -928,6 +947,24 @@ class StockWatchDesktopApp(tk.Tk):
         except Exception as exc:
             self.worker_queue.put(("visual_error", exc))
 
+    def delete_selected_report(self) -> None:
+        selected = self.report_choice.get()
+        if not selected:
+            self.status_var.set("请先选择要删除的日报。")
+            return
+        path = Path(selected)
+        if not messagebox.askyesno("确认删除", f"删除这份日报及同名 HTML？\n{path}"):
+            return
+        try:
+            delete_report_by_path(path)
+            self.report_choice.set("")
+            self.report_text.delete("1.0", "end")
+            self.report_text.insert("1.0", "日报已删除。")
+            self.status_var.set("日报已删除。")
+            self.refresh_all()
+        except Exception as exc:
+            self.status_var.set(f"删除日报失败：{exc}")
+
     def run_pipeline(self) -> None:
         try:
             self.persist_settings_from_forms()
@@ -1103,7 +1140,7 @@ def load_config_safe() -> dict[str, object]:
             "scheduler": {"enabled": True, "timezone": "Asia/Shanghai", "times": ["08:30", "12:30", "16:00"]},
             "news": {"use_akshare_stock_news": True, "max_items_per_stock": 8, "rss_feeds": []},
             "macro": {"endpoints": []},
-            "reports": {"output_dir": ""},
+            "reports": {"output_dir": "", "retention_days": 30},
             "llm": {"enabled": False, "prompt_template": DEFAULT_LLM_PROMPT},
             "stocks": [],
         }
@@ -1126,6 +1163,16 @@ def parse_optional_float(text: str) -> float | None:
         return float(text.replace(",", ""))
     except ValueError as exc:
         raise ValueError(f"数字格式不正确：{text}") from exc
+
+
+def parse_optional_int(text: str, default: int = 0) -> int:
+    text = str(text).strip()
+    if not text:
+        return default
+    try:
+        return int(text)
+    except ValueError as exc:
+        raise ValueError(f"整数格式不正确：{text}") from exc
 
 
 def parse_float_list(text: str) -> list[float]:

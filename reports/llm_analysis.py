@@ -205,6 +205,9 @@ def build_prompt(template: str, item: dict[str, Any], macro_events: list[dict[st
         "macro_events": json.dumps(macro_events, ensure_ascii=False, indent=2) if macro_events else "本次未取得宏观事件数据。",
     }
     prompt = template.format(**values)
+    previous_context = format_previous_context(item)
+    if previous_context:
+        prompt = prompt.rstrip() + "\n\n昨日观察复盘与本日新增变化：\n" + previous_context
     if "core_conclusion" not in prompt or "important_facts" not in prompt:
         prompt = prompt.rstrip() + STRUCTURED_COMPACT_OUTPUT_INSTRUCTION
     return prompt
@@ -233,3 +236,35 @@ def compact_news(news_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
             }
         )
     return rows
+
+
+def format_previous_context(item: dict[str, Any]) -> str:
+    watch_review = item.get("watch_review") or []
+    intraday_change = item.get("intraday_change") or {}
+    if not watch_review and not intraday_change.get("has_previous"):
+        return ""
+    context = {
+        "yesterday_watch_review": [
+            {
+                "point": row.get("point"),
+                "status": row.get("status"),
+                "evidence": row.get("evidence"),
+            }
+            for row in watch_review[:8]
+        ],
+        "same_day_change": {
+            "has_previous": intraday_change.get("has_previous", False),
+            "previous_run": intraday_change.get("previous_run", ""),
+            "items": intraday_change.get("items", []),
+            "new_news": [
+                {
+                    "title": news.get("title"),
+                    "source": news.get("source"),
+                    "relevance_score": news.get("relevance_score"),
+                }
+                for news in (intraday_change.get("new_news", []) or [])[:5]
+            ],
+        },
+        "instruction": "请在结论、短线情景、明日重点观察中显式考虑这些复盘信息；未触发或信息不足时必须说明。",
+    }
+    return json.dumps(context, ensure_ascii=False, indent=2)

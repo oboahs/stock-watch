@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -119,6 +120,29 @@ def init_db(path: Path = DB_PATH) -> None:
             );
             """
         )
+        ensure_analysis_columns(conn)
+
+
+def ensure_analysis_columns(conn: sqlite3.Connection) -> None:
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(analysis_snapshots)").fetchall()}
+    columns = {
+        "latest_close": "REAL",
+        "change_pct": "REAL",
+        "volume_signal": "TEXT",
+        "price_signal": "TEXT",
+        "news_count": "INTEGER",
+        "news_digest_json": "TEXT",
+        "llm_direction": "TEXT",
+        "llm_confidence": "INTEGER",
+        "llm_json": "TEXT",
+        "watch_tomorrow_json": "TEXT",
+        "key_levels_json": "TEXT",
+        "watch_review_json": "TEXT",
+        "intraday_change_json": "TEXT",
+    }
+    for name, column_type in columns.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE analysis_snapshots ADD COLUMN {name} {column_type}")
 
 
 def upsert_stocks(stocks: list[dict[str, Any]]) -> None:
@@ -349,9 +373,12 @@ def save_analysis_snapshot(code: str, run_date: str, snapshot: dict[str, Any]) -
             """
             INSERT INTO analysis_snapshots(
                 code, run_date, relevance_avg, sentiment_summary, risk_level, risk_score,
-                technical_summary, scenario_json, uncertainties, created_at
+                technical_summary, scenario_json, uncertainties,
+                latest_close, change_pct, volume_signal, price_signal, news_count, news_digest_json,
+                llm_direction, llm_confidence, llm_json, watch_tomorrow_json, key_levels_json,
+                watch_review_json, intraday_change_json, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 code,
@@ -363,9 +390,50 @@ def save_analysis_snapshot(code: str, run_date: str, snapshot: dict[str, Any]) -
                 snapshot.get("technical_summary", ""),
                 json.dumps(snapshot.get("scenarios", {}), ensure_ascii=False),
                 "\n".join(snapshot.get("uncertainties", [])),
+                snapshot.get("latest_close"),
+                snapshot.get("change_pct"),
+                snapshot.get("volume_signal", ""),
+                snapshot.get("price_signal", ""),
+                snapshot.get("news_count", 0),
+                json.dumps(snapshot.get("news_digest", []), ensure_ascii=False),
+                snapshot.get("llm_direction", ""),
+                snapshot.get("llm_confidence"),
+                json.dumps(snapshot.get("llm_payload", {}), ensure_ascii=False),
+                json.dumps(snapshot.get("watch_tomorrow", []), ensure_ascii=False),
+                json.dumps(snapshot.get("key_levels", []), ensure_ascii=False),
+                json.dumps(snapshot.get("watch_review", []), ensure_ascii=False),
+                json.dumps(snapshot.get("intraday_change", {}), ensure_ascii=False),
                 now_text(),
             ),
         )
+
+
+def load_latest_snapshot_before(code: str, run_date: str) -> dict[str, Any] | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT * FROM analysis_snapshots
+            WHERE code = ? AND run_date < ?
+            ORDER BY run_date DESC, id DESC
+            LIMIT 1
+            """,
+            (code, run_date),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def load_latest_snapshot_for_date(code: str, run_date: str) -> dict[str, Any] | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT * FROM analysis_snapshots
+            WHERE code = ? AND run_date = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (code, run_date),
+        ).fetchone()
+    return dict(row) if row else None
 
 
 def save_report(report_date: str, title: str, path: Path, content: str, sent_email: bool = False) -> None:
@@ -374,6 +442,55 @@ def save_report(report_date: str, title: str, path: Path, content: str, sent_ema
             "INSERT INTO reports(report_date, title, path, content, sent_email, created_at) VALUES (?, ?, ?, ?, ?, ?)",
             (report_date, title, str(path), content, 1 if sent_email else 0, now_text()),
         )
+
+
+def delete_report_by_path(path: str | Path) -> int:
+    target = Path(path).expanduser()
+    deleted = 0
+    with get_conn() as conn:
+        cursor = conn.execute("DELETE FROM reports WHERE path = ?", (str(target),))
+        deleted = cursor.rowcount
+    delete_report_files(target)
+    return deleted
+
+
+def prune_reports(retention_days: int | None) -> int:
+    if retention_days is None or retention_days <= 0:
+        return 0
+    cutoff = datetime.now() - timedelta(days=retention_days)
+    removed = 0
+    with get_conn() as conn:
+        rows = conn.execute("SELECT path, created_at FROM reports ORDER BY id").fetchall()
+        for row in rows:
+            created_at = parse_datetime(str(row["created_at"]))
+            if created_at and created_at < cutoff:
+                conn.execute("DELETE FROM reports WHERE path = ?", (row["path"],))
+                delete_report_files(Path(row["path"]))
+                removed += 1
+    return removed
+
+
+def delete_report_files(path: Path) -> None:
+    candidates = {path}
+    if path.suffix.lower() == ".md":
+        candidates.add(path.with_suffix(".html"))
+    elif path.suffix.lower() == ".html":
+        candidates.add(path.with_suffix(".md"))
+    for candidate in candidates:
+        try:
+            if candidate.exists():
+                candidate.unlink()
+        except OSError:
+            pass
+
+
+def parse_datetime(value: str) -> datetime | None:
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y%m%d", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(value[:19], fmt)
+        except ValueError:
+            continue
+    return None
 
 
 def read_sql(query: str, params: tuple[Any, ...] = ()) -> pd.DataFrame:
